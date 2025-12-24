@@ -69,7 +69,7 @@ export function AppSidebar({
   const trimmedNewChat = newChat.trim()
 
   return (
-    <Sidebar collapsible="icon" className="border-r bg-sidebar" {...props}>
+    <Sidebar collapsible="offcanvas" className="border-r bg-sidebar" {...props}>
       <SidebarHeader className="gap-3 border-b px-4 py-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -204,7 +204,6 @@ export function AppSidebar({
           onLogout={onLogout}
         />
       </SidebarFooter>
-      <SidebarRail />
     </Sidebar>
   )
 }

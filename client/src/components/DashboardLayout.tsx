@@ -48,7 +48,7 @@ import {
   getIdentityPublicKey,
   signMessage,
 } from "@/lib/crypto"
-import { getInstanceHost, normalizeHandle, splitHandle } from "@/lib/handles"
+import { normalizeHandle, splitHandle } from "@/lib/handles"
 import { db, type MessageRecord, type ContactRecord } from "@/lib/db"
 import { cn } from "@/lib/utils"
 import { logClientEvent } from "@/lib/client-logger"
@@ -227,7 +227,6 @@ function formatTimestamp(isoString: string) {
 export function DashboardLayout() {
   const { user, masterKey, identityPrivateKey, logout } = useAuth()
   const { lastSync } = useRatchetSync()
-  const instanceHost = getInstanceHost()
   const [contacts, setContacts] = React.useState<Contact[]>([])
   const [activeId, setActiveId] = React.useState<string>("")
   const [messages, setMessages] = React.useState<StoredMessage[]>([])
@@ -969,15 +968,6 @@ export function DashboardLayout() {
                       : receiptStatus === "READ_BY_USER"
                     ? "read"
                     : null
-                const senderHandle =
-                  message.direction === "in" ? message.peerHandle : null
-                const senderParts = senderHandle ? splitHandle(senderHandle) : null
-                const senderHost = senderParts?.host ?? message.peerHost
-                const showRemoteBadge =
-                  message.direction === "in" &&
-                  Boolean(senderHost) &&
-                  Boolean(instanceHost) &&
-                  senderHost !== instanceHost
                 return (
                   <div
                     key={message.id}
@@ -1007,16 +997,6 @@ export function DashboardLayout() {
                             : "bg-card dark:bg-muted text-foreground rounded-2xl rounded-bl-sm"
                         )}
                       >
-                        {senderHandle ? (
-                          <div className="mb-1 flex flex-wrap items-center gap-2 text-[10px] text-muted-foreground">
-                            <span className="font-mono">{senderHandle}</span>
-                            {showRemoteBadge && senderHost ? (
-                              <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[9px] font-semibold text-amber-700">
-                                Remote: {senderHost}
-                              </span>
-                            ) : null}
-                          </div>
-                        ) : null}
                         <p className="whitespace-pre-wrap">{message.text}</p>
                         <div className="mt-2 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
                           <span>{meta}</span>
@@ -1050,7 +1030,10 @@ export function DashboardLayout() {
                               <Info className="h-4 w-4" />
                             </Button>
                           </TooltipTrigger>
-                          <TooltipContent side="top" className="text-xs">
+                          <TooltipContent
+                            side="top"
+                            className="text-xs border border-slate-800 bg-slate-900 text-slate-100 shadow-lg"
+                          >
                             <div className="space-y-1">
                               <p><span className="font-semibold">Status:</span> {receiptLabel ?? (message.direction === 'in' ? 'received' : 'sending...')}</p>
                               <p><span className="font-semibold">Signature:</span> {message.verified ? 'Verified' : 'Unverified'}</p>
