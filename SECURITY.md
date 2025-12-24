@@ -151,11 +151,8 @@ Federation uses signed requests plus callback verification:
 
 ## Logging and redaction
 
-- Server and client logging redact sensitive fields (passwords, private keys,
-  tokens).
+- Server logging redacts sensitive fields (passwords, private keys, tokens).
 - Encrypted blobs and metadata may appear in logs; plaintext should not.
-- Client log ingestion requires JWT authentication in production and enforces
-  strict Origin checking and rate limits.
 
 ## Abuse protection
 

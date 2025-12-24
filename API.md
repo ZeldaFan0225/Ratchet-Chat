@@ -545,37 +545,3 @@ Response:
   "timestamp": "2024-01-01T00:00:00.000Z"
 }
 ```
-
-## Client (Next.js) API
-
-### POST /api/logs
-
-Receives client-side logs and writes them to the client log file.
-
-Headers:
-- `Origin` must match `NEXT_PUBLIC_APP_URL` origin when required.
-- `Authorization: Bearer <jwt>` when `CLIENT_LOG_REQUIRE_AUTH=true` (default in production).
-- `Content-Type: application/json`
-
-Request body:
-```json
-{
-  "level": "info",
-  "event": "message.send.prepared",
-  "payload": { "message_id": "uuid" },
-  "context": { "route": "/messages/send" },
-  "timestamp": "2024-01-01T00:00:00.000Z"
-}
-```
-
-Behavior:
-- Rejects payloads larger than `CLIENT_LOG_MAX_BYTES` (default 200000 bytes).
-- Redacts sensitive keys before writing logs.
-- Rate limits apply and return `429` when exceeded.
-
-Response:
-```json
-{
-  "ok": true
-}
-```

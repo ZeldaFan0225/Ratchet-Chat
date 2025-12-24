@@ -44,8 +44,6 @@ services:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3000}
       NEXT_PUBLIC_API_HOST: ${NEXT_PUBLIC_API_HOST:-localhost:3000}
       NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3001}
-      JWT_SECRET: ${JWT_SECRET:-change-me}
-      CLIENT_LOG_DIR: /data/logs
     volumes:
       - client-data:/data
     depends_on:

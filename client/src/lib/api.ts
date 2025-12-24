@@ -1,5 +1,3 @@
-import { logClientEvent } from "@/lib/client-logger"
-
 const baseUrl = process.env.NEXT_PUBLIC_API_URL ?? ""
 let authToken: string | null = null
 
@@ -30,7 +28,6 @@ export async function apiFetch<T>(
 ): Promise<T> {
   const { parseJson = true, headers, body, ...init } = options
   const normalizedPath = path.startsWith("/") ? path : `/${path}`
-  const shouldLog = !normalizedPath.startsWith("/api/logs")
   const finalHeaders = new Headers(headers)
   if (authToken && !finalHeaders.has("Authorization")) {
     finalHeaders.set("Authorization", `Bearer ${authToken}`)
@@ -47,43 +44,12 @@ export async function apiFetch<T>(
     finalHeaders.set("Content-Type", "application/json")
   }
 
-  if (shouldLog) {
-    void logClientEvent(
-      {
-        level: "info",
-        event: "api.request",
-        payload: {
-          path: normalizedPath,
-          method: init.method ?? "GET",
-          headers: Object.fromEntries(finalHeaders.entries()),
-          body,
-        },
-      },
-      authToken ?? undefined
-    )
-  }
-
   const response = await fetch(buildUrl(normalizedPath), {
     ...init,
     body: finalBody as BodyInit | null | undefined,
     headers: finalHeaders,
     credentials: "include",
   })
-
-  if (shouldLog) {
-    void logClientEvent(
-      {
-        level: response.ok ? "info" : "warn",
-        event: "api.response",
-        payload: {
-          path: normalizedPath,
-          status: response.status,
-          ok: response.ok,
-        },
-      },
-      authToken ?? undefined
-    )
-  }
 
   if (!response.ok) {
     const contentType = response.headers.get("content-type") ?? ""
@@ -98,20 +64,6 @@ export async function apiFetch<T>(
       )
     }
     const errorMessage = message || `Request failed with ${response.status}`
-    if (shouldLog) {
-      void logClientEvent(
-        {
-        level: "error",
-        event: "api.error",
-        payload: {
-          path: normalizedPath,
-          status: response.status,
-          message: errorMessage,
-        },
-        },
-        authToken ?? undefined
-      )
-    }
     throw new Error(errorMessage)
   }
 

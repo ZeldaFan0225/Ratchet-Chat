@@ -15,7 +15,6 @@ import {
 } from "@/lib/crypto"
 import { splitHandle } from "@/lib/handles"
 import { db, type ReceiptStatus } from "@/lib/db"
-import { logClientEvent } from "@/lib/client-logger"
 
 type QueueItem = {
   id: string
@@ -209,28 +208,7 @@ export function useRatchetSync() {
 
   const processSingleQueueItem = React.useCallback(
     async (item: QueueItem) => {
-      console.log("[processSingleQueueItem] Starting processing for:", item.id)
-      void logClientEvent(
-        {
-          level: "info",
-          event: "queue.item.received",
-          payload: item,
-        },
-        getAuthToken() ?? undefined
-      )
       if (!masterKey || !transportPrivateKey) {
-        console.warn("[processSingleQueueItem] Missing keys, aborting.")
-        void logClientEvent(
-          {
-            level: "warn",
-            event: "queue.item.skipped",
-            payload: {
-              id: item.id,
-              reason: "missing_keys",
-            },
-          },
-          getAuthToken() ?? undefined
-        )
         return
       }
 
@@ -241,23 +219,10 @@ export function useRatchetSync() {
           transportPrivateKey
         )
       } catch (e) {
-        console.error("[processSingleQueueItem] Decrypt error:", e)
-        void logClientEvent(
-          {
-            level: "error",
-            event: "queue.item.decrypt_error",
-            payload: {
-              id: item.id,
-              sender_handle: item.sender_handle,
-            },
-          },
-          getAuthToken() ?? undefined
-        )
         return
       }
 
       const payload = parseTransitPayload(decryptedBytes)
-      console.log("[processSingleQueueItem] Decrypted payload:", payload)
       
       const senderSignature =
         payload.senderSignature ?? payload.sender_signature
@@ -326,21 +291,6 @@ export function useRatchetSync() {
         : signatureVerified && handleMatchesQueue
 
       if (!authenticityVerified) {
-        console.warn("[processSingleQueueItem] Message verification failed. Rejecting.", item.id)
-        void logClientEvent(
-          {
-            level: "warn",
-            event: "queue.item.verification_failed",
-            payload: {
-              id: item.id,
-              sender_handle: item.sender_handle,
-              message_id: payloadMessageId,
-              signature_verified: signatureVerified,
-              handle_matches_queue: handleMatchesQueue,
-            },
-          },
-          getAuthToken() ?? undefined
-        )
         return
       }
 
@@ -365,7 +315,6 @@ export function useRatchetSync() {
         })
       )
       
-      console.log("[processSingleQueueItem] Storing to vault...")
       let stored: VaultItem | null = null
       try {
         stored = await apiFetch<VaultItem>(
@@ -380,19 +329,6 @@ export function useRatchetSync() {
           }
         )
       } catch (e) {
-        console.error("[processSingleQueueItem] Store API error:", e)
-        void logClientEvent(
-          {
-            level: "error",
-            event: "queue.item.store_error",
-            payload: {
-              id: item.id,
-              sender_handle: item.sender_handle,
-              message_id: payloadMessageId,
-            },
-          },
-          getAuthToken() ?? undefined
-        )
         return
       }
 
@@ -401,7 +337,6 @@ export function useRatchetSync() {
         iv: stored.iv,
       })
 
-      console.log("[processSingleQueueItem] Saving to local DB...", stored.id)
       await db.messages.put({
         id: stored.id,
         ownerId:
@@ -418,19 +353,6 @@ export function useRatchetSync() {
         createdAt: stored.created_at ?? item.created_at,
       })
 
-      void logClientEvent(
-        {
-          level: "info",
-          event: "message.stored.local",
-          payload: {
-            id: stored.id,
-            sender_handle: stored.original_sender_handle ?? item.sender_handle,
-            message_id: payloadMessageId,
-            created_at: stored.created_at ?? item.created_at,
-          },
-        },
-        getAuthToken() ?? undefined
-      )
 
       try {
         await apiFetch("/receipts", {
@@ -441,35 +363,10 @@ export function useRatchetSync() {
             type: "PROCESSED_BY_CLIENT",
           },
         })
-        void logClientEvent(
-          {
-            level: "info",
-            event: "receipt.sent",
-            payload: {
-              recipient_handle: item.sender_handle,
-              message_id: payloadMessageId ?? item.id,
-              type: "PROCESSED_BY_CLIENT",
-            },
-          },
-          getAuthToken() ?? undefined
-        )
       } catch {
         // Receipts are best-effort.
-        void logClientEvent(
-          {
-            level: "warn",
-            event: "receipt.send_failed",
-            payload: {
-              recipient_handle: item.sender_handle,
-              message_id: payloadMessageId ?? item.id,
-              type: "PROCESSED_BY_CLIENT",
-            },
-          },
-          getAuthToken() ?? undefined
-        )
       }
       
-      console.log("[processSingleQueueItem] Done. Triggering sync update.")
       setLastSync(Date.now())
     },
     [masterKey, transportPrivateKey, user?.id, user?.handle]
@@ -697,19 +594,15 @@ export function useRatchetSync() {
       auth: token ? { token: `Bearer ${token}` } : undefined,
     })
     const handler = (payload: QueueItem) => {
-      console.log("[useRatchetSync] Socket INCOMING_MESSAGE received", payload)
       // If the payload has the encrypted blob, process it directly.
       if (payload && payload.encrypted_blob) {
-        console.log("[useRatchetSync] Processing real-time payload...")
         void processSingleQueueItem(payload)
       } else {
-        console.warn("[useRatchetSync] Fallback to runSync (missing payload)")
         // Fallback for backward compatibility or if full payload isn't sent
         void runSync()
       }
     }
     const handleReceiptEvent = async (payload: ReceiptEvent) => {
-      console.log("[useRatchetSync] Socket RECEIPT_UPDATE received", payload)
       const handle = user?.handle
       if (!payload?.message_id || !payload?.type) {
         return
@@ -720,10 +613,8 @@ export function useRatchetSync() {
       }
     }
     socket.on("connect", () => {
-      console.log("[useRatchetSync] Socket connected", socket.id)
     })
     socket.on("connect_error", (err) => {
-      console.error("[useRatchetSync] Socket connection error", err)
     })
     socket.on("INCOMING_MESSAGE", handler)
     socket.on("RECEIPT_UPDATE", handleReceiptEvent)

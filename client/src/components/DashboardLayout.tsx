@@ -39,7 +39,7 @@ import {
 } from "@/components/ui/tooltip"
 import { useAuth } from "@/context/AuthContext"
 import { useRatchetSync } from "@/hooks/useRatchetSync"
-import { apiFetch, getAuthToken } from "@/lib/api"
+import { apiFetch } from "@/lib/api"
 import {
   decryptString,
   buildMessageSignaturePayload,
@@ -51,7 +51,6 @@ import {
 import { normalizeHandle, splitHandle } from "@/lib/handles"
 import { db, type MessageRecord, type ContactRecord } from "@/lib/db"
 import { cn } from "@/lib/utils"
-import { logClientEvent } from "@/lib/client-logger"
 
 type Contact = {
   handle: string
@@ -607,7 +606,6 @@ export function DashboardLayout() {
         body: { peer_handle: activeContact.handle },
       })
     } catch (error) {
-      console.error("Failed to delete chat from server:", error)
     }
 
     // Update state
@@ -683,19 +681,6 @@ export function DashboardLayout() {
           return next
         })
         setActiveId(nextContact.handle)
-        void logClientEvent(
-          {
-            level: "info",
-            event: "contact.start_chat",
-            payload: {
-              handle: nextContact.handle,
-              host: nextContact.host,
-              has_identity_key: Boolean(nextContact.publicIdentityKey),
-              has_transport_key: Boolean(nextContact.publicTransportKey),
-            },
-          },
-          getAuthToken() ?? undefined
-        )
       } catch (error) {
         setStartError(
           error instanceof Error ? error.message : "Unable to start chat"
@@ -742,20 +727,6 @@ export function DashboardLayout() {
       const encryptedBlob = await encryptTransitEnvelope(
         payload,
         activeContact.publicTransportKey
-      )
-      void logClientEvent(
-        {
-          level: "info",
-          event: "message.send.prepared",
-          payload: {
-            recipient_handle: activeContact.handle,
-            sender_handle: user.handle,
-            message_id: messageId,
-            content_length: trimmed.length,
-            encrypted_blob_length: encryptedBlob.length,
-          },
-        },
-        getAuthToken() ?? undefined
       )
       const localPayload = JSON.stringify({
         text: trimmed,
@@ -805,18 +776,6 @@ export function DashboardLayout() {
           sender_vault_signature_verified: true,
         },
       })
-      void logClientEvent(
-        {
-          level: "info",
-          event: "message.send.sent",
-          payload: {
-            recipient_handle: activeContact.handle,
-            message_id: messageId,
-            sender_vault_stored: Boolean(sendResponse?.sender_vault_stored),
-          },
-        },
-        getAuthToken() ?? undefined
-      )
       const vaultStored = Boolean(sendResponse?.sender_vault_stored)
       await db.messages.update(messageId, {
         receiptStatus: "DELIVERED_TO_SERVER",
@@ -835,18 +794,6 @@ export function DashboardLayout() {
       )
       setComposeText("")
     } catch (error) {
-      void logClientEvent(
-        {
-          level: "error",
-          event: "message.send.failed",
-          payload: {
-            recipient_handle: activeContact?.handle,
-            error:
-              error instanceof Error ? error.message : "Unable to send message",
-          },
-        },
-        getAuthToken() ?? undefined
-      )
       setSendError(
         error instanceof Error ? error.message : "Unable to send message"
       )

@@ -52,13 +52,16 @@ docker compose -f docker-compose.prod.yml up --build -d
   - `NEXT_PUBLIC_APP_URL` (e.g. `https://ratchet-client.example.com`)
   - `JWT_SECRET` (strong random value)
   - `CORS_ALLOWED_ORIGINS` (e.g. `https://ratchet-client.example.com`)
+- Database defaults (override as needed):
+  - `POSTGRES_USER`
+  - `POSTGRES_PASSWORD`
+  - `POSTGRES_DB`
 - Federation trust defaults to TOFU; you may optionally set
   `FEDERATION_ALLOWED_HOSTS` for an allowlist.
 
 ## Logs
 
 - Server logs: `server/logs/server.log`
-- Client logs: `client/logs/client.log`
 
 ## Federation Keys
 
