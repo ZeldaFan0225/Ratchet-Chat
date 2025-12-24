@@ -1,0 +1,56 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ratchet}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ratchet_password}
+      POSTGRES_DB: ${POSTGRES_DB:-ratchet_chat}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+
+  server:
+    build:
+      context: ./server
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      SERVER_HOST: ${SERVER_HOST:-localhost:3000}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://ratchet:ratchet_password@db:5432/ratchet_chat}
+      LOG_DIR: /data/logs
+      SERVER_CERT_PATH: /data/.cert
+    volumes:
+      - server-data:/data
+    depends_on:
+      - db
+    ports:
+      - "3000:3000"
+
+  client:
+    build:
+      context: ./client
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3000}
+        NEXT_PUBLIC_API_HOST: ${NEXT_PUBLIC_API_HOST:-localhost:3000}
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3001}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3000}
+      NEXT_PUBLIC_API_HOST: ${NEXT_PUBLIC_API_HOST:-localhost:3000}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3001}
+      CLIENT_LOG_DIR: /data/logs
+    volumes:
+      - client-data:/data
+    depends_on:
+      - server
+    ports:
+      - "3001:3000"
+
+volumes:
+  db-data:
+  server-data:
+  client-data:

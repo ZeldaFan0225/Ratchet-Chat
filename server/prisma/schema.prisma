@@ -1,0 +1,65 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ReceiptType {
+  DELIVERED_TO_SERVER
+  PROCESSED_BY_CLIENT
+  READ_BY_USER
+}
+
+model User {
+  id                         String          @id @default(uuid()) @db.Uuid
+  username                   String          @unique
+  auth_hash                  String
+  auth_salt                  String
+  auth_iterations            Int
+  kdf_salt                   String
+  kdf_iterations             Int
+  public_identity_key        String
+  public_transport_key       String
+  encrypted_identity_key     String
+  encrypted_identity_iv      String
+  encrypted_transport_key    String
+  encrypted_transport_iv     String
+  created_at                 DateTime        @default(now())
+  incoming_queue             IncomingQueue[] @relation("IncomingRecipient")
+  vault_messages             MessageVault[]  @relation("VaultOwner")
+  receipts                   Receipt[]       @relation("ReceiptRecipient")
+}
+
+model IncomingQueue {
+  id             String   @id @default(uuid()) @db.Uuid
+  recipient_id   String   @db.Uuid
+  sender_handle  String?
+  encrypted_blob String   @db.Text
+  created_at     DateTime @default(now())
+  recipient      User     @relation("IncomingRecipient", fields: [recipient_id], references: [id], onDelete: Cascade)
+
+  @@index([recipient_id])
+}
+
+model MessageVault {
+  id                        String   @id @default(uuid()) @db.Uuid
+  owner_id                  String   @db.Uuid
+  original_sender_handle    String
+  encrypted_blob            String   @db.Text
+  iv                        String
+  sender_signature_verified Boolean  @default(false)
+  created_at                DateTime @default(now())
+  owner                     User     @relation("VaultOwner", fields: [owner_id], references: [id], onDelete: Cascade)
+}
+
+model Receipt {
+  id           String      @id @default(uuid()) @db.Uuid
+  recipient_id String      @db.Uuid
+  message_id   String      @db.Uuid
+  type         ReceiptType
+  timestamp    DateTime    @default(now())
+  recipient    User        @relation("ReceiptRecipient", fields: [recipient_id], references: [id], onDelete: Cascade)
+}

@@ -1,0 +1,9 @@
+node_modules
+dist
+logs
+.cert
+.env
+.env.*
+npm-debug.log*
+yarn-debug.log*
+.DS_Store
