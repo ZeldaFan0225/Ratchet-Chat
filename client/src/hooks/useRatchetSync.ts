@@ -8,6 +8,7 @@ import {
   buildMessageSignaturePayload,
   decodeUtf8,
   decryptTransitBlob,
+  decryptString,
   encodeUtf8,
   encryptString,
   verifySignature,
@@ -66,18 +67,16 @@ type DirectoryEntry = {
   public_transport_key: string
 }
 
-type ReceiptItem = {
-  id: string
+type ReceiptBase = {
+  id?: string
   message_id: string
   type: ReceiptStatus
   timestamp: string
 }
 
-type ReceiptEvent = {
-  message_id: string
-  type: ReceiptStatus
-  timestamp: string
-}
+type ReceiptItem = ReceiptBase & { id: string }
+
+type ReceiptEvent = ReceiptBase
 
 const RECEIPT_CURSOR_PREFIX = "ratchet-chat:receipts:since"
 const RECEIPT_PENDING_PREFIX = "ratchet-chat:receipts:pending"
@@ -107,7 +106,7 @@ async function storeReceiptCursor(handle: string | null | undefined, value: stri
   await db.syncState.put({ key, value })
 }
 
-async function loadPendingReceipts(handle?: string | null): Promise<ReceiptItem[]> {
+async function loadPendingReceipts(handle?: string | null): Promise<ReceiptBase[]> {
   const key = receiptPendingKey(handle)
   if (!key) {
     return []
@@ -121,7 +120,7 @@ async function loadPendingReceipts(handle?: string | null): Promise<ReceiptItem[
 
 async function storePendingReceipts(
   handle: string | null | undefined,
-  receipts: ReceiptItem[]
+  receipts: ReceiptBase[]
 ) {
   const key = receiptPendingKey(handle)
   if (!key) {
@@ -147,8 +146,8 @@ function getReceiptRank(value?: ReceiptStatus) {
   return receiptRank[value] ?? 0
 }
 
-function normalizeReceipts(receipts: ReceiptItem[]) {
-  const map = new Map<string, ReceiptItem>()
+function normalizeReceipts(receipts: ReceiptBase[]) {
+  const map = new Map<string, ReceiptBase>()
   for (const receipt of receipts) {
     const existing = map.get(receipt.message_id)
     if (!existing) {
@@ -184,7 +183,7 @@ export function useRatchetSync() {
       }
       const pending = await loadPendingReceipts(handle)
       const combined = normalizeReceipts([...pending, ...receipts])
-      const remaining: ReceiptItem[] = []
+      const remaining: ReceiptBase[] = []
       let updated = false
       for (const receipt of combined) {
         const record = await db.messages.get(receipt.message_id)

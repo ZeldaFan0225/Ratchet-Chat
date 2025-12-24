@@ -41,7 +41,7 @@ export type ConversationPreview = {
 type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
   conversations: ConversationPreview[]
   activeId: string
-  onSelect: (id: string, messageId?: string) => void
+  onSelectConversation: (id: string, messageId?: string) => void
   onStartChat: (handle: string) => void
   onLogout: () => void
   startError?: string | null
@@ -53,7 +53,7 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
 export function AppSidebar({
   conversations,
   activeId,
-  onSelect,
+  onSelectConversation,
   onStartChat,
   onLogout,
   startError,
@@ -142,7 +142,7 @@ export function AppSidebar({
                         className="h-auto items-start gap-3 rounded-xl px-3 py-3 data-[active=true]:bg-emerald-100 dark:data-[active=true]:bg-emerald-900/20 data-[active=true]:text-emerald-900 dark:data-[active=true]:text-emerald-100"
                         isActive={activeId === conversation.id && !conversation.foundMessageId}
                         onClick={() => {
-                          onSelect(conversation.id, conversation.foundMessageId)
+                          onSelectConversation(conversation.id, conversation.foundMessageId)
                           if (isMobile) {
                             setOpenMobile(false)
                           }

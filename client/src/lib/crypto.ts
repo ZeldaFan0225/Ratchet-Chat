@@ -65,12 +65,18 @@ export function base64ToBytes(base64: string): Uint8Array {
   return bytes
 }
 
+function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const copy = new Uint8Array(bytes.byteLength)
+  copy.set(bytes)
+  return copy.buffer
+}
+
 export function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return bytesToBase64(new Uint8Array(buffer))
 }
 
 export function base64ToArrayBuffer(base64: string): ArrayBuffer {
-  return base64ToBytes(base64).buffer
+  return bytesToArrayBuffer(base64ToBytes(base64))
 }
 
 export function encodeUtf8(value: string): Uint8Array {
@@ -114,7 +120,7 @@ export async function deriveMasterKey(
   return subtle.deriveKey(
     {
       name: "PBKDF2",
-      salt,
+      salt: bytesToArrayBuffer(salt),
       iterations,
       hash: "SHA-256",
     },
@@ -144,7 +150,7 @@ export async function deriveAuthHash(
   const bits = await subtle.deriveBits(
     {
       name: "PBKDF2",
-      salt,
+      salt: bytesToArrayBuffer(salt),
       iterations,
       hash: "SHA-256",
     },
@@ -213,7 +219,7 @@ export async function importTransportPrivateKey(
 ): Promise<CryptoKey> {
   return getSubtleCrypto().importKey(
     "pkcs8",
-    privateKeyBytes,
+    bytesToArrayBuffer(privateKeyBytes),
     {
       name: "RSA-OAEP",
       hash: "SHA-256",
@@ -230,7 +236,11 @@ export async function encryptBytes(
   const cryptoRef = getWebCrypto()
   const iv = cryptoRef.getRandomValues(new Uint8Array(12))
   const ciphertext = new Uint8Array(
-    await cryptoRef.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext)
+    await cryptoRef.subtle.encrypt(
+      { name: "AES-GCM", iv: bytesToArrayBuffer(iv) },
+      key,
+      bytesToArrayBuffer(plaintext)
+    )
   )
   return { ciphertext, iv }
 }
@@ -241,9 +251,9 @@ export async function decryptBytes(
   iv: Uint8Array
 ): Promise<Uint8Array> {
   const plaintext = await getSubtleCrypto().decrypt(
-    { name: "AES-GCM", iv },
+    { name: "AES-GCM", iv: bytesToArrayBuffer(iv) },
     key,
-    ciphertext
+    bytesToArrayBuffer(ciphertext)
   )
   return new Uint8Array(plaintext)
 }
@@ -306,7 +316,7 @@ export async function encryptTransitEnvelope(
   const aesKeyBytes = cryptoRef.getRandomValues(new Uint8Array(32))
   const aesKey = await cryptoRef.subtle.importKey(
     "raw",
-    aesKeyBytes,
+    bytesToArrayBuffer(aesKeyBytes),
     "AES-GCM",
     false,
     ["encrypt", "decrypt"]
@@ -318,7 +328,7 @@ export async function encryptTransitEnvelope(
   const wrappedKey = await cryptoRef.subtle.encrypt(
     { name: "RSA-OAEP" },
     transportPublicKey,
-    aesKeyBytes
+    bytesToArrayBuffer(aesKeyBytes)
   )
   const envelope: TransitEnvelope = {
     wrapped_key: arrayBufferToBase64(wrappedKey),

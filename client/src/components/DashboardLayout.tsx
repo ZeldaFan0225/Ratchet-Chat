@@ -854,8 +854,8 @@ export function DashboardLayout() {
       >
       <AppSidebar
         conversations={conversations}
-        activeId={activeContact?.id ?? ""}
-        onSelect={(id, messageId) => {
+        activeId={activeContact?.handle ?? ""}
+        onSelectConversation={(id, messageId) => {
           setActiveId(id)
           if (messageId) {
             setScrollToMessageId(messageId)
@@ -1021,17 +1021,23 @@ export function DashboardLayout() {
                         <div className="mt-2 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
                           <span>{meta}</span>
                           {message.verified && (
-                            <ShieldCheck className="h-3 w-3 text-emerald-500" title="Verified Signature" />
+                            <ShieldCheck
+                              className="h-3 w-3 text-emerald-500"
+                              aria-label="Verified Signature"
+                            />
                           )}
                           {receiptStatus ? (
                             receiptStatus === "DELIVERED_TO_SERVER" ? (
-                              <Check className="h-3 w-3" title="Sent" />
+                              <Check className="h-3 w-3" aria-label="Sent" />
                             ) : receiptStatus === "PROCESSED_BY_CLIENT" ? (
-                              <CheckCheck className="h-3 w-3" title="Delivered" />
+                              <CheckCheck
+                                className="h-3 w-3"
+                                aria-label="Delivered"
+                              />
                             ) : receiptStatus === "READ_BY_USER" ? (
                               <CheckCheck
                                 className="h-3 w-3 text-sky-500"
-                                title="Read"
+                                aria-label="Read"
                               />
                             ) : null
                           ) : null}

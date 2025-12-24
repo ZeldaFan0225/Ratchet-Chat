@@ -5,6 +5,7 @@ import * as React from "react"
 import { apiFetch, setAuthToken } from "@/lib/api"
 import { db } from "@/lib/db"
 import {
+  base64ToArrayBuffer,
   base64ToBytes,
   bytesToBase64,
   decryptPrivateKey,
@@ -101,7 +102,7 @@ async function exportMasterKey(key: CryptoKey) {
 async function importMasterKey(rawBase64: string) {
   return getSubtleCrypto().importKey(
     "raw",
-    base64ToBytes(rawBase64),
+    base64ToArrayBuffer(rawBase64),
     "AES-GCM",
     false,
     ["encrypt", "decrypt"]

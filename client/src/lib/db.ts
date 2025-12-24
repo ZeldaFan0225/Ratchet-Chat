@@ -25,9 +25,11 @@ export type MessageRecord = {
   vaultSynced?: boolean
 }
 
-class RatchetDB extends Dexie {
+export class RatchetDB extends Dexie {
   messages!: Table<MessageRecord, string>
   contacts!: Table<ContactRecord, string>
+  auth!: Table<AuthRecord, string>
+  syncState!: Table<SyncStateRecord, string>
 
   constructor() {
     super("RatchetChat")
@@ -91,13 +93,6 @@ export type AuthRecord = {
 export type SyncStateRecord = {
   key: string
   value: unknown
-}
-
-export interface RatchetDB extends Dexie {
-  messages: Table<MessageRecord, string>
-  contacts: Table<ContactRecord, string>
-  auth: Table<AuthRecord, string>
-  syncState: Table<SyncStateRecord, string>
 }
 
 export const db = new RatchetDB()

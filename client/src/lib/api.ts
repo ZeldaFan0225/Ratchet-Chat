@@ -11,7 +11,8 @@ export function getAuthToken() {
   return authToken
 }
 
-type ApiFetchOptions = RequestInit & {
+type ApiFetchOptions = Omit<RequestInit, "body"> & {
+  body?: unknown
   parseJson?: boolean
 }
 
@@ -35,7 +36,11 @@ export async function apiFetch<T>(
     finalHeaders.set("Authorization", `Bearer ${authToken}`)
   }
   const finalBody =
-    body && typeof body !== "string" && !(body instanceof FormData)
+    body &&
+    typeof body !== "string" &&
+    !(body instanceof FormData) &&
+    !(body instanceof URLSearchParams) &&
+    !(body instanceof Blob)
       ? JSON.stringify(body)
       : body
   if (finalBody && !finalHeaders.has("Content-Type") && !(body instanceof FormData)) {
@@ -60,7 +65,7 @@ export async function apiFetch<T>(
 
   const response = await fetch(buildUrl(normalizedPath), {
     ...init,
-    body: finalBody,
+    body: finalBody as BodyInit | null | undefined,
     headers: finalHeaders,
     credentials: "include",
   })
