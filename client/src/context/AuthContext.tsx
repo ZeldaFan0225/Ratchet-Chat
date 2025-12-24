@@ -37,12 +37,13 @@ type StoredKeys = {
   transportPrivateKey: EncryptedPayload
   publicIdentityKey: string
   publicTransportKey: string
-  token: string // Token is now stored with the keys
+  token: string
 }
 
 type AuthContextValue = {
   status: "guest" | "authenticated"
   user: { id: string | null; username: string; handle: string } | null
+  token: string | null
   masterKey: CryptoKey | null
   identityPrivateKey: Uint8Array | null
   transportPrivateKey: CryptoKey | null
@@ -127,6 +128,7 @@ async function persistActiveSession(keys: StoredKeys) {
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = React.useState<"guest" | "authenticated">("guest")
+  const [token, setToken] = React.useState<string | null>(null)
   const [user, setUser] = React.useState<{
     id: string | null
     username: string
@@ -141,18 +143,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const clearSession = React.useCallback(() => {
     setStatus("guest")
     setUser(null)
+    setToken(null)
     setMasterKey(null)
     setIdentityPrivateKey(null)
     setTransportPrivateKey(null)
     setAuthToken(null)
     
-    // Clear everything from IndexedDB and localStorage
     if (typeof window !== "undefined") {
       window.localStorage.clear()
       window.sessionStorage.clear()
     }
     
-    // Nuke the entire DB
     void db.delete().then(() => db.open()).catch(() => {})
   }, [])
 
@@ -163,40 +164,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (!session) {
           return
         }
-        
-        // Re-derive master key using the stored salt and prompting implies we might need the password again?
-        // Wait, the previous implementation stored the raw master key in sessionStorage.
-        // We can't store the raw master key in IndexedDB securely if we want "encrypted in indexdb".
-        // But StoredKeys stores *encrypted* private keys.
-        // To restore the session without password re-entry, we either:
-        // 1. Store the master key in memory (lost on reload).
-        // 2. Store the master key in sessionStorage (as before).
-        // 3. Store the master key encrypted in IndexedDB... but encrypted with what?
-        
-        // The prompt says: "user related data should be either decrypted in memory or encrypted in indexdb"
-        // If we want persistence across reloads without re-entering password, we need a way to get the master key.
-        // The previous implementation used sessionStorage for the master key.
-        // If we move everything to IndexedDB, we can't store the master key there in plaintext.
-        
-        // However, we can store the *token* in IndexedDB (inside StoredKeys).
-        // But we still need the Master Key to decrypt the private keys.
-        // If the user reloads, they might need to re-login if we don't store the master key somewhere.
-        // The previous implementation stored the master key in sessionStorage.
-        // Let's keep using sessionStorage ONLY for the master key (as a "memory" equivalent that survives reload but not browser close/incognito close), 
-        // OR rely on the user re-entering the password on reload (which is more secure but annoying).
-        
-        // Given "don't use localstorage", sessionStorage is technically allowed but "decrypted in memory" suggests we should favor memory.
-        // But if we only use memory, reload kills the session.
-        // Let's try to restore from sessionStorage if available, otherwise consider it a logout.
-        // But wait, I removed `persistSessionSnapshot` calls. 
-        
-        // Let's adhere to "encrypted in indexdb". 
-        // We will store the encrypted keys in IDB.
-        // We will store the token in IDB.
-        // On reload, if we have the token, we are "logged in" but "locked".
-        // BUT, the current UI doesn't support a "locked" state where we just ask for password.
-        // To maintain the current UX, I will use sessionStorage to hold the master key temporarily.
-        // This effectively keeps it "in memory" for the tab's life.
         
         const masterKeyJson = window.sessionStorage.getItem("ratchet-chat:master-key")
         if (!masterKeyJson) {
@@ -212,6 +179,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         setAuthToken(session.token)
         setStatus("authenticated")
+        setToken(session.token)
         setUser({
           id: userId,
           username: session.username,
@@ -221,7 +189,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setIdentityPrivateKey(identityPrivateKey)
         setTransportPrivateKey(transportPrivateKey)
       } catch {
-        // invalid session
         clearSession()
       }
     }
@@ -331,10 +298,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       token: loginResponse.token
     })
     
-    // Store master key in session storage for reload persistence (treated as ephemeral memory)
     window.sessionStorage.setItem("ratchet-chat:master-key", await exportMasterKey(masterKey))
 
     setStatus("authenticated")
+    setToken(loginResponse.token)
     setUser({ id: userId, username, handle })
     setMasterKey(masterKey)
     setIdentityPrivateKey(identityPair.privateKey)
@@ -441,6 +408,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     window.sessionStorage.setItem("ratchet-chat:master-key", await exportMasterKey(masterKey))
 
     setStatus("authenticated")
+    setToken(loginResponse.token)
     setUser({ id: userId, username, handle })
     setMasterKey(masterKey)
     setIdentityPrivateKey(identityPrivateKey)
@@ -452,6 +420,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     () => ({
       status,
       user,
+      token,
       masterKey,
       identityPrivateKey,
       transportPrivateKey,
@@ -462,6 +431,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [
       status,
       user,
+      token,
       masterKey,
       identityPrivateKey,
       transportPrivateKey,

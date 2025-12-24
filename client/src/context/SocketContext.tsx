@@ -5,7 +5,13 @@ import { io, type Socket } from "socket.io-client"
 
 const SocketContext = React.createContext<Socket | null>(null)
 
-export function SocketProvider({ children }: { children: React.ReactNode }) {
+export function SocketProvider({
+  children,
+  token: propToken,
+}: {
+  children: React.ReactNode
+  token?: string | null
+}) {
   const [socket, setSocket] = React.useState<Socket | null>(null)
 
   React.useEffect(() => {
@@ -14,9 +20,11 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       return
     }
     const token =
-      typeof window !== "undefined"
+      propToken ??
+      (typeof window !== "undefined"
         ? window.localStorage.getItem("ratchet-chat:token")
-        : null
+        : null)
+
     const socketInstance = io(url, {
       withCredentials: true,
       auth: token ? { token: `Bearer ${token}` } : undefined,
@@ -27,7 +35,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       socketInstance.disconnect()
       setSocket(null)
     }
-  }, [])
+  }, [propToken])
 
   return (
     <SocketContext.Provider value={socket}>{children}</SocketContext.Provider>

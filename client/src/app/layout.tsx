@@ -1,7 +1,7 @@
 import type { Metadata } from "next"
 import { Geist, Geist_Mono } from "next/font/google"
 
-import { AuthProvider } from "@/context/AuthContext"
+import { Providers } from "@/components/Providers"
 import { ThemeProvider } from "@/components/theme-provider"
 import "./globals.css"
 
@@ -20,6 +20,14 @@ export const metadata: Metadata = {
   description: "Zero-knowledge, end-to-end encrypted messaging.",
 }
 
+export const viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  interactiveWidget: 'resizes-content',
+}
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -36,7 +44,7 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
-          <AuthProvider>{children}</AuthProvider>
+          <Providers>{children}</Providers>
         </ThemeProvider>
       </body>
     </html>

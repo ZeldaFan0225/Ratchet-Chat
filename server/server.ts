@@ -13,6 +13,7 @@ import {
   getFederationDiscoveryDocument,
   getFederationIdentity,
   getFederationTlsConfig,
+  getServerHost,
 } from "./lib/federationAuth";
 import jwt from "jsonwebtoken";
 
@@ -93,6 +94,49 @@ io.on("connection", (socket) => {
     return;
   }
   socket.join(user.id);
+
+  socket.on("signal", async (data) => {
+    const user = socket.data.user as AuthenticatedUser | undefined;
+    if (!user?.id) return;
+
+    try {
+      if (
+        !data ||
+        typeof data !== "object" ||
+        typeof data.recipient_handle !== "string" ||
+        typeof data.encrypted_blob !== "string"
+      ) {
+        return;
+      }
+
+      const { recipient_handle, encrypted_blob } = data;
+      // Simple parsing - in a real app use the handle library
+      // We assume local handles for socket optimization first
+      // or we accept full handles but only relay to local user IDs.
+      const parts = recipient_handle.split("@");
+      const username = parts[0];
+
+      // Optimistic relay: find connected user by username lookup?
+      // Better: DB lookup to get ID (sockets are joined by User ID)
+      const recipient = await prisma.user.findUnique({
+        where: { username },
+        select: { id: true },
+      });
+
+      if (recipient) {
+        io.to(recipient.id).emit("signal", {
+          sender_handle: `${user.username}@${getServerHost()}`,
+          encrypted_blob,
+        });
+      }
+    } catch (error) {
+      // Ignore signal errors
+    }
+  });
+
+  socket.on("disconnect", () => {
+    // Cleanup if needed
+  });
 });
 
 app.use((req, res, next) => {

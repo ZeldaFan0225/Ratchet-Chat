@@ -38,6 +38,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { useAuth } from "@/context/AuthContext"
+import { useSocket } from "@/context/SocketContext"
+import { useSettings } from "@/hooks/useSettings"
 import { useRatchetSync } from "@/hooks/useRatchetSync"
 import { apiFetch } from "@/lib/api"
 import {
@@ -45,12 +47,15 @@ import {
   buildMessageSignaturePayload,
   encryptString,
   encryptTransitEnvelope,
+  decryptTransitBlob,
   getIdentityPublicKey,
   signMessage,
+  decodeUtf8,
 } from "@/lib/crypto"
 import { normalizeHandle, splitHandle } from "@/lib/handles"
 import { db, type MessageRecord, type ContactRecord } from "@/lib/db"
 import { cn } from "@/lib/utils"
+import { RecipientInfoDialog } from "@/components/RecipientInfoDialog"
 
 type Contact = {
   handle: string
@@ -224,7 +229,9 @@ function formatTimestamp(isoString: string) {
 }
 
 export function DashboardLayout() {
-  const { user, masterKey, identityPrivateKey, logout } = useAuth()
+  const { user, masterKey, identityPrivateKey, transportPrivateKey, logout } = useAuth()
+  const socket = useSocket()
+  const { settings } = useSettings()
   const { lastSync } = useRatchetSync()
   const [contacts, setContacts] = React.useState<Contact[]>([])
   const [activeId, setActiveId] = React.useState<string>("")
@@ -238,7 +245,183 @@ export function DashboardLayout() {
   const [isChatSearchOpen, setIsChatSearchOpen] = React.useState(false)
   const [scrollToMessageId, setScrollToMessageId] = React.useState<string | null>(null)
   const [highlightedMessageId, setHighlightedMessageId] = React.useState<string | null>(null)
+  const [typingStatus, setTypingStatus] = React.useState<Record<string, boolean>>({})
+  const [showRecipientInfo, setShowRecipientInfo] = React.useState(false)
   const scrollRef = React.useRef<HTMLDivElement>(null)
+  const typingTimeoutRef = React.useRef<NodeJS.Timeout | null>(null)
+
+  // Listen for ephemeral signals (typing indicators)
+  React.useEffect(() => {
+    if (!socket || !transportPrivateKey) return
+
+    const handleSignal = async (data: { sender_handle: string; encrypted_blob: string }) => {
+      try {
+        const plaintextBytes = await decryptTransitBlob(data.encrypted_blob, transportPrivateKey)
+        const plaintext = decodeUtf8(plaintextBytes)
+        const payload = JSON.parse(plaintext) as { type: string; status?: boolean }
+        
+        if (payload.type === "typing") {
+          const isTyping = Boolean(payload.status)
+          setTypingStatus((prev) => ({
+            ...prev,
+            [data.sender_handle]: isTyping
+          }))
+          
+          // Auto-clear typing status after 5 seconds just in case we miss the 'false' signal
+          if (isTyping) {
+            setTimeout(() => {
+               setTypingStatus((prev) => ({
+                ...prev,
+                [data.sender_handle]: false
+              }))
+            }, 5000)
+          }
+        }
+      } catch (err) {
+        // Ignore decryption failures
+      }
+    }
+
+    socket.on("signal", handleSignal)
+    return () => {
+      socket.off("signal", handleSignal)
+    }
+  }, [socket, transportPrivateKey])
+
+  const messagesByPeer = React.useMemo(() => {
+    const map = new Map<string, StoredMessage[]>()
+    for (const message of messages) {
+      const bucket = map.get(message.peerHandle) ?? []
+      bucket.push(message)
+      map.set(message.peerHandle, bucket)
+    }
+    for (const bucket of map.values()) {
+      bucket.sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+    }
+    return map
+  }, [messages])
+
+  const activeContact =
+    contacts.find((contact) => contact.handle === activeId) ?? null
+  const activeMessagesRaw = activeContact
+    ? messagesByPeer.get(activeContact.handle) ?? []
+    : []
+
+  const activeMessages = React.useMemo(() => {
+    if (!chatSearchQuery.trim()) {
+      return activeMessagesRaw
+    }
+    const lower = chatSearchQuery.toLowerCase()
+    return activeMessagesRaw.filter((msg) => msg.text.toLowerCase().includes(lower))
+  }, [activeMessagesRaw, chatSearchQuery])
+
+  const conversations = React.useMemo<ConversationPreview[]>(() => {
+    const query = sidebarSearchQuery.toLowerCase().trim()
+    
+    if (!query) {
+      return contacts.map((contact) => {
+        const thread = messagesByPeer.get(contact.handle) ?? []
+        const lastMessage = thread[thread.length - 1]
+        const isActive = contact.handle === activeId
+        const unread = isActive
+          ? 0
+          : thread.filter((m) => m.direction === "in" && !m.isRead).length
+        
+        return {
+          id: contact.handle,
+          uid: contact.handle,
+          name: contact.username,
+          handle: contact.handle,
+          lastMessage: lastMessage?.text ?? "No messages yet",
+          lastTimestamp: formatTimestamp(lastMessage?.timestamp ?? ""),
+          unread,
+          status: "offline",
+        }
+      })
+    }
+
+    const results: ConversationPreview[] = []
+
+    // 1. Chats matching contact name/handle
+    const matchingContacts = contacts.filter((contact) => 
+      contact.username.toLowerCase().includes(query) ||
+      contact.handle.toLowerCase().includes(query)
+    )
+
+    for (const contact of matchingContacts) {
+      const thread = messagesByPeer.get(contact.handle) ?? []
+      const lastMessage = thread[thread.length - 1]
+      const isActive = contact.handle === activeId
+      const unread = isActive
+        ? 0
+        : thread.filter((m) => m.direction === "in" && !m.isRead).length
+
+      results.push({
+        id: contact.handle,
+        uid: contact.handle,
+        name: contact.username,
+        handle: contact.handle,
+        lastMessage: lastMessage?.text ?? "No messages yet",
+        lastTimestamp: formatTimestamp(lastMessage?.timestamp ?? ""),
+        unread,
+        status: "offline",
+      })
+    }
+
+    // 2. Found messages
+    for (const contact of contacts) {
+      const thread = messagesByPeer.get(contact.handle) ?? []
+      const matchingMessages = thread.filter((msg) => 
+        msg.text.toLowerCase().includes(query)
+      )
+
+      for (const msg of matchingMessages) {
+        // Create an entry for each matching message
+        results.push({
+          id: contact.handle,
+          uid: `${contact.handle}:${msg.id}`,
+          name: contact.username,
+          handle: contact.handle,
+          lastMessage: msg.text,
+          lastTimestamp: formatTimestamp(msg.timestamp),
+          unread: 0, // Search results typically don't show unread counts for the message itself
+          status: "offline",
+          foundMessageId: msg.id
+        })
+      }
+    }
+
+    return results
+  }, [contacts, messagesByPeer, activeId, sidebarSearchQuery])
+
+  const handleTyping = React.useCallback(async () => {
+    if (!settings.showTypingIndicator || !activeContact || !socket || !activeContact.publicTransportKey) return
+
+    // Clear existing timeout
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current)
+    } else {
+       const payload = JSON.stringify({ type: "typing", status: true })
+       encryptTransitEnvelope(payload, activeContact.publicTransportKey).then(blob => {
+         socket.emit("signal", {
+           recipient_handle: activeContact.handle,
+           encrypted_blob: blob
+         })
+       })
+    }
+
+    // Set timeout to send "stop typing"
+    typingTimeoutRef.current = setTimeout(() => {
+      const payload = JSON.stringify({ type: "typing", status: false })
+       encryptTransitEnvelope(payload, activeContact.publicTransportKey).then(blob => {
+         socket.emit("signal", {
+           recipient_handle: activeContact.handle,
+           encrypted_blob: blob
+         })
+       })
+       typingTimeoutRef.current = null
+    }, 2000)
+  }, [activeContact, settings.showTypingIndicator, socket])
 
   // Effect 1: Handle scrolling to a specific message
   React.useEffect(() => {
@@ -395,112 +578,6 @@ export function DashboardLayout() {
     }
   }, [messages, masterKey, user])
 
-  const messagesByPeer = React.useMemo(() => {
-    const map = new Map<string, StoredMessage[]>()
-    for (const message of messages) {
-      const bucket = map.get(message.peerHandle) ?? []
-      bucket.push(message)
-      map.set(message.peerHandle, bucket)
-    }
-    for (const bucket of map.values()) {
-      bucket.sort((a, b) => a.timestamp.localeCompare(b.timestamp))
-    }
-    return map
-  }, [messages])
-
-  const conversations = React.useMemo<ConversationPreview[]>(() => {
-    const query = sidebarSearchQuery.toLowerCase().trim()
-    
-    if (!query) {
-      return contacts.map((contact) => {
-        const thread = messagesByPeer.get(contact.handle) ?? []
-        const lastMessage = thread[thread.length - 1]
-        const isActive = contact.handle === activeId
-        const unread = isActive
-          ? 0
-          : thread.filter((m) => m.direction === "in" && !m.isRead).length
-        
-        return {
-          id: contact.handle,
-          uid: contact.handle,
-          name: contact.username,
-          handle: contact.handle,
-          lastMessage: lastMessage?.text ?? "No messages yet",
-          lastTimestamp: formatTimestamp(lastMessage?.timestamp ?? ""),
-          unread,
-          status: "offline",
-        }
-      })
-    }
-
-    const results: ConversationPreview[] = []
-
-    // 1. Chats matching contact name/handle
-    const matchingContacts = contacts.filter((contact) => 
-      contact.username.toLowerCase().includes(query) ||
-      contact.handle.toLowerCase().includes(query)
-    )
-
-    for (const contact of matchingContacts) {
-      const thread = messagesByPeer.get(contact.handle) ?? []
-      const lastMessage = thread[thread.length - 1]
-      const isActive = contact.handle === activeId
-      const unread = isActive
-        ? 0
-        : thread.filter((m) => m.direction === "in" && !m.isRead).length
-
-      results.push({
-        id: contact.handle,
-        uid: contact.handle,
-        name: contact.username,
-        handle: contact.handle,
-        lastMessage: lastMessage?.text ?? "No messages yet",
-        lastTimestamp: formatTimestamp(lastMessage?.timestamp ?? ""),
-        unread,
-        status: "offline",
-      })
-    }
-
-    // 2. Found messages
-    for (const contact of contacts) {
-      const thread = messagesByPeer.get(contact.handle) ?? []
-      const matchingMessages = thread.filter((msg) => 
-        msg.text.toLowerCase().includes(query)
-      )
-
-      for (const msg of matchingMessages) {
-        // Create an entry for each matching message
-        results.push({
-          id: contact.handle,
-          uid: `${contact.handle}:${msg.id}`,
-          name: contact.username,
-          handle: contact.handle,
-          lastMessage: msg.text,
-          lastTimestamp: formatTimestamp(msg.timestamp),
-          unread: 0, // Search results typically don't show unread counts for the message itself
-          status: "offline",
-          foundMessageId: msg.id
-        })
-      }
-    }
-
-    return results
-  }, [contacts, messagesByPeer, activeId, sidebarSearchQuery])
-
-  const activeContact =
-    contacts.find((contact) => contact.handle === activeId) ?? null
-  const activeMessagesRaw = activeContact
-    ? messagesByPeer.get(activeContact.handle) ?? []
-    : []
-
-  const activeMessages = React.useMemo(() => {
-    if (!chatSearchQuery.trim()) {
-      return activeMessagesRaw
-    }
-    const lower = chatSearchQuery.toLowerCase()
-    return activeMessagesRaw.filter((msg) => msg.text.toLowerCase().includes(lower))
-  }, [activeMessagesRaw, chatSearchQuery])
-
   React.useEffect(() => {
     if (!activeContact) {
       return
@@ -534,6 +611,10 @@ export function DashboardLayout() {
           )
         )
       }
+      
+      // Gate read receipts based on settings
+      if (!settings.sendReadReceipts) return
+
       const sentIds: string[] = []
       for (const message of receiptTargets) {
         const messageId = message.messageId
@@ -581,7 +662,7 @@ export function DashboardLayout() {
       document.removeEventListener("visibilitychange", handleVisibilityChange)
       window.removeEventListener("focus", handleFocus)
     }
-  }, [activeContact, activeMessagesRaw])
+  }, [activeContact, activeMessagesRaw, settings.sendReadReceipts])
 
   const handleDeleteChat = React.useCallback(async () => {
     if (!activeContact || !user) return
@@ -811,6 +892,11 @@ export function DashboardLayout() {
           } as React.CSSProperties
         }
       >
+      <RecipientInfoDialog 
+        contact={activeContact}
+        open={showRecipientInfo}
+        onOpenChange={setShowRecipientInfo}
+      />
       <AppSidebar
         conversations={conversations}
         activeId={activeContact?.handle ?? ""}
@@ -829,25 +915,40 @@ export function DashboardLayout() {
         searchQuery={sidebarSearchQuery}
         onSearchChange={setSidebarSearchQuery}
       />
-      <SidebarInset className="flex h-screen flex-col overflow-hidden bg-background">
+      <SidebarInset className="flex h-dvh flex-col overflow-hidden bg-background">
         <header className="flex flex-none items-center gap-3 border-b bg-background/85 px-5 py-4 backdrop-blur">
           <SidebarTrigger className="-ml-1" />
-          {activeContact && (
-            <Avatar className="h-10 w-10 bg-emerald-600 text-white">
-              <AvatarFallback>
-                {activeContact.username.slice(0, 2).toUpperCase()}
-              </AvatarFallback>
-            </Avatar>
-          )}
-          <div className="flex-1">
-            <p className="text-sm font-semibold">
-              {activeContact?.username ?? "Select a chat"}
-            </p>
-            <p className="text-xs text-muted-foreground">
-              {activeContact
-                ? "Encrypted session"
-                : "Start by adding a username on the left."}
-            </p>
+          <div 
+            className="flex flex-1 items-center gap-3 cursor-pointer transition-opacity hover:opacity-80 -ml-2 pl-2 rounded-md py-1 hover:bg-muted/50"
+            onClick={() => activeContact && setShowRecipientInfo(true)}
+          >
+            {activeContact && (
+              <Avatar className="h-10 w-10 bg-emerald-600 text-white">
+                <AvatarFallback>
+                  {activeContact.username.slice(0, 2).toUpperCase()}
+                </AvatarFallback>
+              </Avatar>
+            )}
+            <div className="flex-1">
+              <p className="text-sm font-semibold">
+                {activeContact?.username ?? "Select a chat"}
+              </p>
+              {activeContact ? (
+                activeContact.handle && typingStatus[activeContact.handle] ? (
+                  <p className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 animate-pulse">
+                    Typing...
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    Encrypted session
+                  </p>
+                )
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Start by adding a username on the left.
+                </p>
+              )}
+            </div>
           </div>
           <div className="ml-auto flex items-center gap-2">
             {isChatSearchOpen ? (
@@ -906,7 +1007,7 @@ export function DashboardLayout() {
           <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_var(--chat-glow),_transparent_55%)]" />
           <div className="pointer-events-none absolute inset-0 opacity-40 bg-[linear-gradient(90deg,var(--chat-grid)_1px,transparent_1px),linear-gradient(0deg,var(--chat-grid)_1px,transparent_1px)] bg-[size:32px_32px]" />
           <ScrollArea className="h-full">
-            <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-6 py-8">
+            <div className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-4 py-4">
               {!activeContact ? (
                 <div className="mx-auto rounded-full bg-card/80 px-4 py-2 text-xs text-muted-foreground shadow-sm">
                   Add a handle to begin a secure chat.
@@ -949,7 +1050,7 @@ export function DashboardLayout() {
                     >
                       <div
                         className={cn(
-                          "max-w-[85%] px-4 py-3 text-sm leading-relaxed shadow-sm sm:max-w-[70%] transition-all duration-500",
+                          "max-w-[85%] px-3 py-2 text-sm leading-relaxed shadow-sm sm:max-w-[70%] transition-all duration-500",
                           highlightedMessageId === message.id &&
                             "ring-2 ring-emerald-500 ring-offset-2 dark:ring-offset-slate-900 scale-[1.02]",
                           message.direction === "out"
@@ -992,7 +1093,7 @@ export function DashboardLayout() {
                           </TooltipTrigger>
                           <TooltipContent
                             side="top"
-                            className="text-xs border border-slate-800 bg-slate-900 text-slate-100 shadow-lg"
+                            className="text-xs"
                           >
                             <div className="space-y-1">
                               <p><span className="font-semibold">Status:</span> {receiptLabel ?? (message.direction === 'in' ? 'received' : 'sending...')}</p>
@@ -1026,7 +1127,10 @@ export function DashboardLayout() {
                 }
                 className="border-none bg-transparent shadow-none focus-visible:ring-0"
                 value={composeText}
-                onChange={(event) => setComposeText(event.target.value)}
+                onChange={(event) => {
+                  setComposeText(event.target.value)
+                  handleTyping()
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
                     event.preventDefault()

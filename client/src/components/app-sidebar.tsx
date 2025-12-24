@@ -194,7 +194,7 @@ export function AppSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
-      <SidebarFooter className="border-t px-4 py-3">
+      <SidebarFooter className="border-t p-2">
         <NavUser
           user={{
             name: user?.username ?? "User",

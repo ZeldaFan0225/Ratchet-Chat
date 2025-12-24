@@ -1,41 +1,42 @@
-# Ratchet Chat API
+# Ratchet Chat Server API
 
-This document lists every HTTP endpoint and realtime event used by the Ratchet Chat
-server and client applications. All JSON examples are illustrative; omit optional
-fields as described per endpoint.
+This server implements a blind drop-box with a strict two-bucket storage pattern:
+- IncomingQueue: transit payloads encrypted to the recipient's public transport key.
+- MessageVault: storage payloads encrypted to the recipient's client-side AES key.
 
-## Base URLs
-
-- Server API base: `https://<server-host>` (example: `https://ratchet.example.com`)
-- Client (Next.js) API base: `https://<client-host>` (example: `https://ratchet-client.example.com`)
-
-## Conventions
-
-- Content-Type: `application/json` for all request bodies.
-- IDs: UUID strings.
-- Handle format: `username@host` (host may include `:port`).
-- Host validation pattern: `[A-Za-z0-9.-]+(:port)?` (no scheme).
-- Receipt types: `DELIVERED_TO_SERVER`, `PROCESSED_BY_CLIENT`, `READ_BY_USER`.
-- Error shape: `{ "error": "message" }` with an appropriate status code.
-- Server JSON body limit: 2 MB.
-- Rate limits apply to auth, federation, and log ingestion endpoints (`429`).
+The server never receives plaintext messages, raw passwords, or private keys.
 
 ## Authentication
 
-- JWT is required for all protected endpoints (marked below).
-- Send as: `Authorization: Bearer <jwt>`.
-- JWT `sub` is the user id; `username` is also encoded in the token.
-- Socket.IO auth uses the same JWT (see Realtime section).
-- Password authentication uses SRP-6a (`/auth/srp/*`) and never sends plaintext
-  passwords to the server.
+- JWT is required for all endpoints except `POST /auth/register`, `GET /auth/params/:username`,
+  `POST /auth/login`, `POST /auth/srp/start`, `POST /auth/srp/verify`,
+  `GET /directory/:handle`, `GET /api/directory`, `GET /api/federation/key`,
+  `POST /api/federation/incoming`, and `POST /api/federation/receipts`.
+- Send the token using `Authorization: Bearer <jwt>`.
+- JWT subject (`sub`) is the user id.
 
-## Server API
+Common errors:
+- 400 Invalid request
+- 401 Unauthorized
+- 403 Forbidden
+- 404 Not found
+- 409 Conflict (username already taken)
 
-### Auth (public)
+## Data expectations
+
+- All `id` fields are UUID strings.
+- `handle` is a `username@host` string (e.g. `alice@example.com`).
+- `encrypted_blob` is opaque data (Base64 or other safe string encoding).
+- `public_identity_key` is a Base64 Ed25519 public key.
+- `public_transport_key` is a Base64 RSA/X25519 public key.
+- The server does not verify cryptographic claims beyond basic type checks.
+
+## Endpoints
+
+### Group 0: Authentication & Account
 
 #### POST /auth/register
-
-Registers a new local user and stores encrypted private keys and public keys.
+Registers a user and stores public keys.
 
 Request body:
 ```json
@@ -54,14 +55,7 @@ Request body:
 }
 ```
 
-Notes:
-- `username` must be local (no `@`), length 3-64.
-- `kdf_*` fields are used client-side to derive the master key; the server stores them for later login.
-- The server enforces minimum/maximum iteration counts for `kdf_iterations`.
-- `srp_salt` and `srp_verifier` are used for SRP-6a login.
-
-Responses:
-- `201`:
+Response:
 ```json
 {
   "user": {
@@ -73,10 +67,8 @@ Responses:
   }
 }
 ```
-- `409` if username already taken.
 
 #### GET /auth/params/:username
-
 Returns key-derivation parameters for a local username (used to derive the
 client master key).
 
@@ -89,7 +81,6 @@ Response:
 ```
 
 #### POST /auth/login
-
 Deprecated. Use SRP login endpoints.
 
 Response:
@@ -100,7 +91,6 @@ Response:
 ```
 
 #### POST /auth/srp/start
-
 Starts SRP-6a login by accepting the client ephemeral `A` and returning the SRP
 salt and server ephemeral `B`.
 
@@ -121,7 +111,6 @@ Response:
 ```
 
 #### POST /auth/srp/verify
-
 Completes SRP-6a login by verifying the client proof `M1`. Returns JWT, encrypted
 keys, and server proof `M2` so the client can verify the server.
 
@@ -152,36 +141,9 @@ Response:
 }
 ```
 
-### Directory (public)
-
-#### GET /directory/:handle
-
-Returns public keys for a handle. If the handle is remote, the server performs a
-federation directory lookup and proxies the result.
-
-Response:
-```json
-{
-  "id": "uuid",
-  "handle": "alice@example.com",
-  "host": "example.com",
-  "public_identity_key": "base64",
-  "public_transport_key": "base64"
-}
-```
-
-#### GET /directory?handle=alice@example.com
-
-Same response and behavior as `/directory/:handle`.
-
-#### GET /api/directory?handle=alice@example.com
-
-Same response and behavior as `/directory/:handle`.
-
-### Federation (public, server-to-server)
+### Group 1: Identity & Directory (Public)
 
 #### GET /.well-known/ratchet-chat/federation.json
-
 Federation discovery document used for trust/pinning and endpoint discovery.
 
 Response:
@@ -207,95 +169,37 @@ Response:
 }
 ```
 
-#### GET /api/federation/key
-
-Returns this server's federation identity.
+#### GET /directory/:handle
+Returns public keys and id for a handle. If the handle belongs to a remote
+host, this server performs the federation lookup and relays the result.
 
 Response:
 ```json
 {
-  "host": "ratchet.example.com",
+  "id": "uuid",
+  "handle": "alice@example.com",
+  "host": "example.com",
+  "public_identity_key": "base64",
+  "public_transport_key": "base64"
+}
+```
+
+#### GET /api/federation/key
+Returns this server's federation public key for callback verification.
+
+Response:
+```json
+{
+  "host": "api.example.com",
   "publicKey": "base64"
 }
 ```
 
-#### POST /api/federation/incoming
-#### POST /federation/incoming
-
-Remote host enqueues a transit message for a local recipient.
-
-Headers:
-- `X-Ratchet-Host`: sender host (no scheme, e.g. `chat.remote.com`)
-- `X-Ratchet-Sig`: Base64 Ed25519 signature of `JSON.stringify(body)`
-
-Request body:
-```json
-{
-  "recipient_handle": "bob@local.host",
-  "sender_handle": "alice@remote.host",
-  "encrypted_blob": "opaque-string"
-}
-```
-
-Behavior:
-- Verifies signature via callback to `https://<X-Ratchet-Host>/api/federation/key`
-  in production; http is allowed for localhost in development.
-- Rejects if `sender_handle` host does not match `X-Ratchet-Host`.
-- Rejects hosts that resolve to private/reserved IPs in production or that are not
-  in the configured allowlist (if set).
-- Detects replayed payloads and returns `409`.
-
-Response:
-```json
-{
-  "id": "uuid",
-  "recipient_handle": "bob@local.host",
-  "created_at": "2024-01-01T00:00:00.000Z"
-}
-```
-
-#### POST /api/federation/receipts
-#### POST /federation/receipts
-
-Remote host delivers a receipt for a local recipient.
-
-Headers:
-- `X-Ratchet-Host`: sender host
-- `X-Ratchet-Sig`: Base64 Ed25519 signature of `JSON.stringify(body)`
-
-Request body:
-```json
-{
-  "recipient_handle": "alice@local.host",
-  "message_id": "uuid",
-  "type": "READ_BY_USER"
-}
-```
-
-Behavior:
-- Verifies signature via callback to `https://<X-Ratchet-Host>/api/federation/key`
-  in production; http is allowed for localhost in development.
-- Rejects hosts that resolve to private/reserved IPs in production or that are not
-  in the configured allowlist (if set).
-- Detects replayed payloads and returns `409`.
-
-Response:
-```json
-{
-  "id": "uuid",
-  "recipient_id": "uuid",
-  "message_id": "uuid",
-  "type": "READ_BY_USER",
-  "timestamp": "2024-01-01T00:00:00.000Z"
-}
-```
-
-### Messages (protected)
+### Group 2: Transit Flow (Auth required)
 
 #### POST /messages/send
-
-Stores an encrypted transit payload in IncomingQueue (local recipient) or relays
-to a remote host (remote recipient). Also optionally stores a sender vault copy.
+Stores an encrypted transit payload in the IncomingQueue (local) or relays to
+the remote host based on `recipient_handle`.
 
 Request body:
 ```json
@@ -309,34 +213,74 @@ Request body:
 }
 ```
 
-Behavior:
-- If `recipient_handle` is local: enqueue in IncomingQueue and return `201`.
-- If remote: sign and forward to `POST /api/federation/incoming` on the remote
-  host and return `202` if accepted.
-- If `sender_vault_*` is provided, the server stores a local copy for the sender.
+Response:
+```json
+{
+  "id": "uuid",
+  "recipient_handle": "bob@remote.host",
+  "created_at": "2024-01-01T00:00:00.000Z",
+  "relayed": false
+}
+```
 
-Local response (`201`):
+Side effect:
+- Creates a Receipt of type `DELIVERED_TO_SERVER` for the sender.
+
+#### POST /api/federation/incoming
+Federation endpoint used by remote hosts to enqueue a message.
+
+Security:
+- Callback verification is required. Include `X-Ratchet-Host` and `X-Ratchet-Sig`
+  headers and sign the JSON payload with the sender host's Ed25519 private key.
+
+Request body:
+```json
+{
+  "recipient_handle": "bob@local.host",
+  "sender_handle": "alice@remote.host",
+  "encrypted_blob": "opaque-string"
+}
+```
+
+Response:
 ```json
 {
   "id": "uuid",
   "recipient_handle": "bob@local.host",
-  "created_at": "2024-01-01T00:00:00.000Z",
-  "relayed": false,
-  "sender_vault_stored": true
+  "created_at": "2024-01-01T00:00:00.000Z"
 }
 ```
 
-Remote response (`202`):
+#### POST /api/federation/receipts
+Federation endpoint used by remote hosts to deliver read/processed receipts.
+
+Security:
+- Callback verification is required. Include `X-Ratchet-Host` and `X-Ratchet-Sig`
+  headers and sign the JSON payload with the sender host's Ed25519 private key.
+
+Request body:
 ```json
 {
-  "recipient_handle": "bob@remote.host",
-  "relayed": true,
-  "sender_vault_stored": true
+  "recipient_handle": "alice@local.host",
+  "message_id": "uuid",
+  "type": "READ_BY_USER"
 }
 ```
 
-#### GET /messages/queue
+Response:
+```json
+{
+  "id": "uuid",
+  "recipient_id": "uuid",
+  "message_id": "uuid",
+  "type": "READ_BY_USER",
+  "timestamp": "2024-01-01T00:00:00.000Z"
+}
+```
 
+### Group 3: Bridge Flow (Auth required)
+
+#### GET /messages/queue
 Returns all IncomingQueue items for the authenticated user.
 
 Response:
@@ -352,14 +296,10 @@ Response:
 ]
 ```
 
-#### DELETE /messages/queue/:id
-
-Always returns `405`. Use `POST /messages/queue/:id/store` instead.
-
 #### POST /messages/queue/:id/store
-
-Stores a decrypted-and-reencrypted message into MessageVault and removes it
-from IncomingQueue in a single transaction.
+Stores a decrypted-and-reencrypted message into the MessageVault and removes it
+from the IncomingQueue in a single operation. Only queue items owned by the
+authenticated user can be stored.
 
 Request body:
 ```json
@@ -383,9 +323,12 @@ Response:
 }
 ```
 
-#### POST /messages/vault
+#### DELETE /messages/queue/:id
+This endpoint is no longer supported. Messages are only removed from the queue
+when stored via `POST /messages/queue/:id/store`.
 
-Stores a message encrypted with the client's master key in MessageVault.
+#### POST /messages/vault
+Stores a message encrypted with the client's AES key in the MessageVault.
 
 Request body:
 ```json
@@ -398,10 +341,6 @@ Request body:
 }
 ```
 
-Behavior:
-- If `message_id` already exists for this user, returns the existing entry (`200`).
-- Otherwise creates a new entry (`201`).
-
 Response:
 ```json
 {
@@ -415,12 +354,13 @@ Response:
 }
 ```
 
-#### GET /messages/vault
+### Group 4: Storage Flow & Receipts (Auth required)
 
-Returns MessageVault items for the authenticated user.
+#### GET /messages/vault
+Returns MessageVault items for the authenticated user (newest-first by default).
 
 Query params:
-- `order`: `asc` or `desc` (default `desc`)
+- `order`: `desc` (default) or `asc`
 - `limit`: optional integer max results
 
 Response:
@@ -438,47 +378,20 @@ Response:
 ]
 ```
 
-#### POST /messages/vault/delete-chat
-
-Deletes all MessageVault entries for a peer handle.
-
-Request body:
-```json
-{
-  "peer_handle": "alice@remote.host"
-}
-```
-
-Response:
-```json
-{
-  "count": 12
-}
-```
-
-### Receipts (protected)
-
 #### POST /receipts
-
-Creates a receipt for a local recipient or relays to a remote host if
-`recipient_handle` is remote.
+Creates a receipt.
 
 Request body:
 ```json
 {
   "recipient_id": "uuid",
-  "recipient_handle": "alice@remote.host",
+  "recipient_handle": "alice@local.host",
   "message_id": "uuid",
   "type": "DELIVERED_TO_SERVER"
 }
 ```
 
-Behavior:
-- Supply either `recipient_id` or `recipient_handle`.
-- If `recipient_handle` is remote, the server signs and forwards to
-  `POST /api/federation/receipts` on the remote host and returns `202`.
-
-Local response (`201`):
+Response:
 ```json
 {
   "id": "uuid",
@@ -489,19 +402,11 @@ Local response (`201`):
 }
 ```
 
-Remote response (`202`):
-```json
-{
-  "relayed": true
-}
-```
-
 #### GET /receipts
-
 Returns receipts for the authenticated user.
 
 Query params:
-- `since`: ISO timestamp; returns receipts after this time
+- `since`: ISO timestamp; returns receipts after this time.
 
 Response:
 ```json
@@ -516,32 +421,104 @@ Response:
 ]
 ```
 
-## Realtime (Socket.IO on the server)
+### Group 5: User Settings (Auth required)
 
-### Connection
+#### GET /auth/settings
+Retrieves current user preferences.
 
-- URL: server base URL (e.g. `https://ratchet.example.com`)
-- Auth: include `auth: { token: "Bearer <jwt>" }` or query `?token=Bearer <jwt>`.
-
-### Events (server -> client)
-
-#### INCOMING_MESSAGE
+Response:
 ```json
 {
-  "id": "uuid",
-  "message_id": "uuid",
-  "recipient_id": "uuid",
-  "sender_handle": "alice@remote.host",
-  "encrypted_blob": "opaque-string",
-  "created_at": "2024-01-01T00:00:00.000Z"
+  "showTypingIndicator": true,
+  "sendReadReceipts": true
 }
 ```
 
-#### RECEIPT_UPDATE
+#### PATCH /auth/settings
+Updates user preferences.
+
+Request body:
 ```json
 {
-  "message_id": "uuid",
-  "type": "READ_BY_USER",
-  "timestamp": "2024-01-01T00:00:00.000Z"
+  "showTypingIndicator": false,
+  "sendReadReceipts": true
 }
 ```
+
+Response:
+```json
+{
+  "showTypingIndicator": false,
+  "sendReadReceipts": true
+}
+```
+
+## WebSocket API (Socket.io)
+
+Authentication is handled via handshake auth: `{ token: "Bearer <jwt>" }`.
+
+### Server-to-Client Events
+
+- `INCOMING_MESSAGE`: Emitted when a new message is enqueued for the user.
+  ```json
+  {
+    "id": "uuid",
+    "message_id": "uuid",
+    "recipient_id": "uuid",
+    "sender_handle": "alice@host",
+    "encrypted_blob": "base64",
+    "created_at": "ISO-8601"
+  }
+  ```
+
+- `RECEIPT_UPDATE`: Emitted when a receipt is stored/received.
+  ```json
+  {
+    "message_id": "uuid",
+    "type": "READ_BY_USER",
+    "timestamp": "ISO-8601"
+  }
+  ```
+
+- `signal`: Ephemeral signaling (e.g. typing indicators).
+  ```json
+  {
+    "sender_handle": "alice@host",
+    "encrypted_blob": "base64-encrypted-to-transport-key"
+  }
+  ```
+
+### Client-to-Server Events
+
+- `signal`: Sends an ephemeral signal to a connected local user.
+  ```json
+  {
+    "recipient_handle": "bob@host",
+    "encrypted_blob": "base64-encrypted-to-transport-key"
+  }
+  ```
+
+## What the server expects from the client
+
+Identity and authentication:
+- Generate identity and transport key pairs client-side.
+- Provide only public keys at registration.
+- Use a strong password; the server stores only a hash.
+
+Transit flow:
+- Encrypt message payloads with the recipient's public transport key.
+- Upload the transit payload to `/messages/send`.
+- Do not send plaintext or private keys.
+
+Bridge flow (client-driven only):
+- Pull from `/messages/queue`.
+- Decrypt using the recipient's private transport key.
+- Verify the sender signature using the sender's public identity key.
+- Re-encrypt the message with the recipient's AES key (client-derived).
+- Upload to `/messages/queue/:id/store` with the new ciphertext and `iv`.
+
+Receipts:
+- Create receipts when appropriate (`PROCESSED_BY_CLIENT`, `READ_BY_USER`).
+- If `recipient_handle` is remote, the server forwards to the recipient's host
+  via `POST /federation/receipts`.
+- Treat receipt delivery as metadata only; the server does not verify cryptographic claims.

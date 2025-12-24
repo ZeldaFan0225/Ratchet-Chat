@@ -4,7 +4,7 @@ import { Router } from "express";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 
-import { getJwtSecret } from "../middleware/auth";
+import { getJwtSecret, authenticateToken } from "../middleware/auth";
 import { createRateLimiter } from "../middleware/rateLimit";
 import { computeServerSession, generateServerEphemeral, srp } from "../lib/srp";
 
@@ -17,6 +17,11 @@ const LOGIN_BACKOFF_BASE_MS = Number(
 const LOGIN_BACKOFF_MAX_MS = Number(
   process.env.LOGIN_BACKOFF_MAX_MS ?? 10 * 60 * 1000
 );
+
+const updateSettingsSchema = z.object({
+  showTypingIndicator: z.boolean().optional(),
+  sendReadReceipts: z.boolean().optional(),
+});
 
 const registerSchema = z.object({
   username: z.string().min(3).max(64),
@@ -121,6 +126,43 @@ export const createAuthRouter = (prisma: PrismaClient) => {
   });
 
   router.use(authLimiter);
+
+  router.get("/settings", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { show_typing_indicator: true, send_read_receipts: true },
+    });
+    if (!user) return res.status(404).json({ error: "User not found" });
+    return res.json({
+      showTypingIndicator: user.show_typing_indicator,
+      sendReadReceipts: user.send_read_receipts,
+    });
+  });
+
+  router.patch("/settings", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+    const parsed = updateSettingsSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Invalid request" });
+    
+    const { showTypingIndicator, sendReadReceipts } = parsed.data;
+    const data: any = {};
+    if (showTypingIndicator !== undefined) data.show_typing_indicator = showTypingIndicator;
+    if (sendReadReceipts !== undefined) data.send_read_receipts = sendReadReceipts;
+    
+    if (Object.keys(data).length === 0) return res.json({});
+
+    const user = await prisma.user.update({
+      where: { id: req.user.id },
+      data,
+      select: { show_typing_indicator: true, send_read_receipts: true },
+    });
+    
+    return res.json({
+      showTypingIndicator: user.show_typing_indicator,
+      sendReadReceipts: user.send_read_receipts,
+    });
+  });
 
   router.get("/params/:username", async (req: Request, res: Response) => {
     const { username } = req.params;

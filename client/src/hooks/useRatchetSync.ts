@@ -3,6 +3,7 @@
 import * as React from "react"
 import { io } from "socket.io-client"
 import { useAuth } from "@/context/AuthContext"
+import { useSettings } from "@/hooks/useSettings"
 import { apiFetch, getAuthToken } from "@/lib/api"
 import {
   buildMessageSignaturePayload,
@@ -171,6 +172,7 @@ function normalizeReceipts(receipts: ReceiptBase[]) {
 
 export function useRatchetSync() {
   const { masterKey, transportPrivateKey, user } = useAuth()
+  const { settings } = useSettings()
   const isSyncingRef = React.useRef(false)
   const directoryCacheRef = React.useRef(new Map<string, DirectoryEntry>())
   const [lastSync, setLastSync] = React.useState(0)
@@ -397,6 +399,10 @@ export function useRatchetSync() {
     const query = since ? `?since=${encodeURIComponent(since)}` : ""
     try {
       const receipts = await apiFetch<ReceiptItem[]>(`/receipts${query}`)
+      const filteredReceipts = receipts.filter(
+        (r) => r.type !== "READ_BY_USER" || settings.sendReadReceipts
+      )
+      
       let latestTimestamp = since ? new Date(since) : new Date(0)
       for (const receipt of receipts) {
         const receiptTime = new Date(receipt.timestamp)
@@ -407,14 +413,14 @@ export function useRatchetSync() {
           latestTimestamp = receiptTime
         }
       }
-      await applyReceipts(handle, receipts)
+      await applyReceipts(handle, filteredReceipts)
       if (receipts.length > 0) {
         await storeReceiptCursor(handle, latestTimestamp.toISOString())
       }
     } finally {
       setLastSync(Date.now())
     }
-  }, [applyReceipts, user?.handle, user?.id])
+  }, [applyReceipts, user?.handle, user?.id, settings.sendReadReceipts])
 
   const syncVault = React.useCallback(async () => {
     if (!masterKey) {
@@ -607,6 +613,9 @@ export function useRatchetSync() {
       if (!payload?.message_id || !payload?.type) {
         return
       }
+      if (payload.type === "READ_BY_USER" && !settings.sendReadReceipts) {
+        return
+      }
       const updated = await applyReceipts(handle, [payload])
       if (updated) {
         setLastSync(Date.now())
@@ -625,7 +634,7 @@ export function useRatchetSync() {
       socket.off("RECEIPT_UPDATE", handleReceiptEvent)
       socket.disconnect()
     }
-  }, [masterKey, transportPrivateKey, runSync, applyReceipts, user?.handle, processSingleQueueItem])
+  }, [masterKey, transportPrivateKey, runSync, applyReceipts, user?.handle, processSingleQueueItem, settings.sendReadReceipts])
 
   return { processQueue, syncVault, syncReceipts, runSync, lastSync }
 }
