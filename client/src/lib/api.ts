@@ -1,12 +1,24 @@
 const baseUrl = process.env.NEXT_PUBLIC_API_URL ?? ""
 let authToken: string | null = null
+let unauthorizedHandler: (() => void) | null = null
+let didHandleUnauthorized = false
 
 export function setAuthToken(token: string | null) {
   authToken = token
+  if (token) {
+    didHandleUnauthorized = false
+  }
 }
 
 export function getAuthToken() {
   return authToken
+}
+
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  unauthorizedHandler = handler
+  if (!handler) {
+    didHandleUnauthorized = false
+  }
 }
 
 type ApiFetchOptions = Omit<RequestInit, "body"> & {
@@ -50,6 +62,15 @@ export async function apiFetch<T>(
     headers: finalHeaders,
     credentials: "include",
   })
+
+  if (response.status === 401 && authToken && unauthorizedHandler && !didHandleUnauthorized) {
+    didHandleUnauthorized = true
+    try {
+      unauthorizedHandler()
+    } catch {
+      // Best-effort logout
+    }
+  }
 
   if (!response.ok) {
     const contentType = response.headers.get("content-type") ?? ""

@@ -19,6 +19,7 @@ import { useAuth } from "@/context/AuthContext"
 import { useSettings } from "@/hooks/useSettings"
 import { getIdentityPublicKey } from "@/lib/crypto"
 import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
 
 export function SettingsDialog({
   open,
@@ -27,15 +28,54 @@ export function SettingsDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
-  const { user, identityPrivateKey } = useAuth()
+  const { user, identityPrivateKey, deleteAccount } = useAuth()
   const { settings, updateSettings } = useSettings()
   const [showKey, setShowKey] = React.useState(false)
+  const [deleteConfirm, setDeleteConfirm] = React.useState("")
+  const [deleteError, setDeleteError] = React.useState<string | null>(null)
+  const [isDeleting, setIsDeleting] = React.useState(false)
 
   const identityKey = React.useMemo(() => {
     if (!identityPrivateKey) return ""
     return getIdentityPublicKey(identityPrivateKey)
   }, [identityPrivateKey])
 
+  const deleteLabel = user?.handle ?? user?.username ?? ""
+  const isDeleteMatch = deleteLabel !== "" && deleteConfirm.trim() === deleteLabel
+
+  React.useEffect(() => {
+    if (!open) {
+      setDeleteConfirm("")
+      setDeleteError(null)
+      setIsDeleting(false)
+    }
+  }, [open])
+
+  const handleDeleteAccount = React.useCallback(async () => {
+    if (!deleteLabel) return
+    if (!isDeleteMatch) {
+      setDeleteError(`Type ${deleteLabel} to confirm account deletion.`)
+      return
+    }
+    const confirmed = window.confirm(
+      "This will permanently delete your account and all server data. This cannot be undone."
+    )
+    if (!confirmed) {
+      return
+    }
+    setDeleteError(null)
+    setIsDeleting(true)
+    try {
+      await deleteAccount()
+      onOpenChange(false)
+    } catch (error) {
+      setDeleteError(
+        error instanceof Error ? error.message : "Unable to delete account"
+      )
+    } finally {
+      setIsDeleting(false)
+    }
+  }, [deleteAccount, deleteLabel, isDeleteMatch, onOpenChange])
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[550px]">
@@ -135,6 +175,42 @@ export function SettingsDialog({
                 <p className="text-[10px] text-emerald-700 dark:text-emerald-300">
                   Your private keys never leave your device. The server cannot decrypt your messages.
                 </p>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <p className="text-sm font-semibold text-destructive">Delete account</p>
+                  <p className="text-xs text-muted-foreground">
+                    Permanently remove your account and server-stored encrypted data. This cannot be undone.
+                  </p>
+                </div>
+                <Button
+                  variant="destructive"
+                  className="shrink-0"
+                  disabled={!isDeleteMatch || isDeleting}
+                  onClick={handleDeleteAccount}
+                >
+                  {isDeleting ? "Deleting..." : "Delete"}
+                </Button>
+              </div>
+              <div className="mt-3 space-y-2">
+                <Label htmlFor="delete-confirm" className="text-xs">
+                  Type your handle to confirm
+                </Label>
+                <Input
+                  id="delete-confirm"
+                  value={deleteConfirm}
+                  placeholder={deleteLabel || "user@host"}
+                  onChange={(event) => {
+                    setDeleteConfirm(event.target.value)
+                    setDeleteError(null)
+                  }}
+                />
+                {deleteError ? (
+                  <p className="text-xs text-destructive">{deleteError}</p>
+                ) : null}
               </div>
             </div>
           </TabsContent>

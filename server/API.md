@@ -141,6 +141,19 @@ Response:
 }
 ```
 
+### Account (Auth required)
+
+#### DELETE /auth/account
+Deletes the authenticated account and cascades stored queue, vault, and receipt
+data.
+
+Response:
+```json
+{
+  "ok": true
+}
+```
+
 ### Group 1: Identity & Directory (Public)
 
 #### GET /.well-known/ratchet-chat/federation.json

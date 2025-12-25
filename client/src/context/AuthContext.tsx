@@ -2,7 +2,7 @@
 
 import * as React from "react"
 
-import { apiFetch, setAuthToken } from "@/lib/api"
+import { apiFetch, setAuthToken, setUnauthorizedHandler } from "@/lib/api"
 import { db } from "@/lib/db"
 import {
   base64ToArrayBuffer,
@@ -49,6 +49,7 @@ type AuthContextValue = {
   transportPrivateKey: CryptoKey | null
   register: (username: string, password: string) => Promise<void>
   login: (username: string, password: string) => Promise<void>
+  deleteAccount: () => Promise<void>
   logout: () => void
 }
 
@@ -156,6 +157,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     
     void db.delete().then(() => db.open()).catch(() => {})
   }, [])
+
+  React.useEffect(() => {
+    setUnauthorizedHandler(() => clearSession())
+    return () => setUnauthorizedHandler(null)
+  }, [clearSession])
 
   React.useEffect(() => {
     const restore = async () => {
@@ -415,6 +421,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setTransportPrivateKey(transportPrivateKey)
   }, [])
 
+  const deleteAccount = React.useCallback(async () => {
+    await apiFetch("/auth/account", { method: "DELETE" })
+    clearSession()
+  }, [clearSession])
+
 
   const value = React.useMemo<AuthContextValue>(
     () => ({
@@ -426,6 +437,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       transportPrivateKey,
       register,
       login,
+      deleteAccount,
       logout: clearSession,
     }),
     [
@@ -437,6 +449,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       transportPrivateKey,
       register,
       login,
+      deleteAccount,
       clearSession,
     ]
   )

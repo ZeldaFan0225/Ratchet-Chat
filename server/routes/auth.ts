@@ -164,6 +164,18 @@ export const createAuthRouter = (prisma: PrismaClient) => {
     });
   });
 
+  router.delete("/account", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+    const existing = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { id: true },
+    });
+    if (!existing) return res.status(404).json({ error: "User not found" });
+
+    await prisma.user.delete({ where: { id: req.user.id } });
+    return res.json({ ok: true });
+  });
+
   router.get("/params/:username", async (req: Request, res: Response) => {
     const { username } = req.params;
     if (!username) {

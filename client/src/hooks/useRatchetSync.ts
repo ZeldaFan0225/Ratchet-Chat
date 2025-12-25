@@ -47,6 +47,17 @@ type TransitPayload = {
   message?: string
   plaintext?: string
   attachments?: Attachment[]
+  type?: "edit" | "delete" | "reaction" | "message"
+  edited_at?: string
+  editedAt?: string
+  deleted_at?: string
+  deletedAt?: string
+  reaction_action?: "add" | "remove"
+  reactionAction?: "add" | "remove"
+  reaction_emoji?: string
+  reactionEmoji?: string
+  action?: "add" | "remove"
+  emoji?: string
   senderSignature?: string
   sender_signature?: string
   senderIdentityKey?: string
@@ -241,6 +252,41 @@ export function useRatchetSync() {
       const payloadSenderHandle =
         payload.senderHandle ?? payload.sender_handle
       const payloadMessageId = payload.messageId ?? payload.message_id
+      const payloadType = payload.type ?? "message"
+      let payloadReactionAction =
+        payload.reaction_action ?? payload.reactionAction ?? payload.action
+      let normalizedReactionAction =
+        payloadReactionAction === "remove" ? "remove" : "add"
+      let payloadReactionEmoji =
+        payload.reaction_emoji ?? payload.reactionEmoji ?? payload.emoji
+      if (payloadType === "reaction" && typeof payload.content === "string") {
+        const signedContent = payload.content
+        if (signedContent.startsWith("reaction:")) {
+          const parts = signedContent.split(":")
+          const signedAction = parts[1]
+          const signedEmoji = parts.slice(2).join(":")
+          const signedNormalizedAction =
+            signedAction === "remove" ? "remove" : "add"
+          if (
+            payloadReactionAction &&
+            payloadReactionAction !== signedNormalizedAction
+          ) {
+            return
+          }
+          if (
+            payloadReactionEmoji &&
+            signedEmoji &&
+            payloadReactionEmoji !== signedEmoji
+          ) {
+            return
+          }
+          payloadReactionAction = signedNormalizedAction
+          normalizedReactionAction = signedNormalizedAction
+          if (signedEmoji) {
+            payloadReactionEmoji = signedEmoji
+          }
+        }
+      }
       const senderHandle = item.sender_handle
       let signatureVerified = false
       let directoryEntry: DirectoryEntry | null = null
@@ -262,6 +308,15 @@ export function useRatchetSync() {
             directoryEntry = null
           }
         }
+      }
+
+      if (
+        (payloadType === "edit" ||
+          payloadType === "delete" ||
+          payloadType === "reaction") &&
+        !payloadMessageId
+      ) {
+        return
       }
 
       if (senderSignature) {
@@ -313,7 +368,10 @@ export function useRatchetSync() {
       const vaultPayload = await encryptString(
         masterKey,
         JSON.stringify({
-          text: payload.content,
+          text:
+            payloadType === "reaction"
+              ? payloadReactionEmoji ?? payload.content
+              : payload.content,
           attachments: payload.attachments,
           peerHandle: senderHandle,
           peerUsername: handleParts?.username,
@@ -322,6 +380,13 @@ export function useRatchetSync() {
           peerTransportKey,
           direction: "in",
           timestamp: item.created_at,
+          type: payloadType,
+          edited_at: payload.edited_at ?? payload.editedAt,
+          deleted_at: payload.deleted_at ?? payload.deletedAt,
+          reaction_action:
+            payloadType === "reaction" ? normalizedReactionAction : undefined,
+          reaction_emoji:
+            payloadType === "reaction" ? payloadReactionEmoji : undefined,
           message_id: payloadMessageId,
         })
       )
@@ -364,18 +429,23 @@ export function useRatchetSync() {
         createdAt: stored.created_at ?? item.created_at,
       })
 
-
-      try {
-        await apiFetch("/receipts", {
-          method: "POST",
-          body: {
-            recipient_handle: item.sender_handle,
-            message_id: payloadMessageId ?? item.id,
-            type: "PROCESSED_BY_CLIENT",
-          },
-        })
-      } catch {
-        // Receipts are best-effort.
+      if (
+        payloadType !== "edit" &&
+        payloadType !== "delete" &&
+        payloadType !== "reaction"
+      ) {
+        try {
+          await apiFetch("/receipts", {
+            method: "POST",
+            body: {
+              recipient_handle: item.sender_handle,
+              message_id: payloadMessageId ?? item.id,
+              type: "PROCESSED_BY_CLIENT",
+            },
+          })
+        } catch {
+          // Receipts are best-effort.
+        }
       }
       
       setLastSync(Date.now())
