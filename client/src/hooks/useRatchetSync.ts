@@ -3,7 +3,6 @@
 import * as React from "react"
 import { io } from "socket.io-client"
 import { useAuth } from "@/context/AuthContext"
-import { useSettings } from "@/hooks/useSettings"
 import { apiFetch, getAuthToken } from "@/lib/api"
 import {
   buildMessageSignaturePayload,
@@ -11,11 +10,14 @@ import {
   decryptTransitBlob,
   decryptString,
   encodeUtf8,
+  encryptTransitEnvelope,
   encryptString,
+  getIdentityPublicKey,
+  signMessage,
   verifySignature,
 } from "@/lib/crypto"
 import { splitHandle } from "@/lib/handles"
-import { db, type ReceiptStatus } from "@/lib/db"
+import { db } from "@/lib/db"
 
 type Attachment = {
   filename: string
@@ -47,7 +49,7 @@ type TransitPayload = {
   message?: string
   plaintext?: string
   attachments?: Attachment[]
-  type?: "edit" | "delete" | "reaction" | "message"
+  type?: "edit" | "delete" | "reaction" | "receipt" | "message"
   edited_at?: string
   editedAt?: string
   deleted_at?: string
@@ -58,6 +60,10 @@ type TransitPayload = {
   reactionEmoji?: string
   action?: "add" | "remove"
   emoji?: string
+  receipt_status?: "PROCESSED_BY_CLIENT" | "READ_BY_USER"
+  receiptStatus?: "PROCESSED_BY_CLIENT" | "READ_BY_USER"
+  receipt_timestamp?: string
+  receiptTimestamp?: string
   senderSignature?: string
   sender_signature?: string
   senderIdentityKey?: string
@@ -66,6 +72,14 @@ type TransitPayload = {
   sender_handle?: string
   messageId?: string
   message_id?: string
+  reply_to_message_id?: string
+  replyToMessageId?: string
+  reply_to_text?: string
+  replyToText?: string
+  reply_to_sender_handle?: string
+  replyToSenderHandle?: string
+  reply_to_sender_name?: string
+  replyToSenderName?: string
 }
 
 function parseTransitPayload(bytes: Uint8Array): TransitPayload & { content: string } {
@@ -86,145 +100,58 @@ type DirectoryEntry = {
   public_transport_key: string
 }
 
-type ReceiptBase = {
-  id?: string
-  message_id: string
-  type: ReceiptStatus
-  timestamp: string
-}
-
-type ReceiptItem = ReceiptBase & { id: string }
-
-type ReceiptEvent = ReceiptBase
-
-const RECEIPT_CURSOR_PREFIX = "ratchet-chat:receipts:since"
-const RECEIPT_PENDING_PREFIX = "ratchet-chat:receipts:pending"
-
-function receiptCursorKey(handle?: string | null) {
-  return handle ? `${RECEIPT_CURSOR_PREFIX}:${handle}` : null
-}
-
-function receiptPendingKey(handle?: string | null) {
-  return handle ? `${RECEIPT_PENDING_PREFIX}:${handle}` : null
-}
-
-async function loadReceiptCursor(handle?: string | null): Promise<string | null> {
-  const key = receiptCursorKey(handle)
-  if (!key) {
-    return null
-  }
-  const record = await db.syncState.get(key)
-  return (record?.value as string) ?? null
-}
-
-async function storeReceiptCursor(handle: string | null | undefined, value: string) {
-  const key = receiptCursorKey(handle)
-  if (!key) {
-    return
-  }
-  await db.syncState.put({ key, value })
-}
-
-async function loadPendingReceipts(handle?: string | null): Promise<ReceiptBase[]> {
-  const key = receiptPendingKey(handle)
-  if (!key) {
-    return []
-  }
-  const record = await db.syncState.get(key)
-  if (!record || !record.value) {
-    return []
-  }
-  return record.value as ReceiptItem[]
-}
-
-async function storePendingReceipts(
-  handle: string | null | undefined,
-  receipts: ReceiptBase[]
-) {
-  const key = receiptPendingKey(handle)
-  if (!key) {
-    return
-  }
-  if (receipts.length === 0) {
-    await db.syncState.delete(key)
-    return
-  }
-  await db.syncState.put({ key, value: receipts })
-}
-
-const receiptRank: Record<ReceiptStatus, number> = {
-  DELIVERED_TO_SERVER: 1,
-  PROCESSED_BY_CLIENT: 2,
-  READ_BY_USER: 3,
-}
-
-function getReceiptRank(value?: ReceiptStatus) {
-  if (!value) {
-    return 0
-  }
-  return receiptRank[value] ?? 0
-}
-
-function normalizeReceipts(receipts: ReceiptBase[]) {
-  const map = new Map<string, ReceiptBase>()
-  for (const receipt of receipts) {
-    const existing = map.get(receipt.message_id)
-    if (!existing) {
-      map.set(receipt.message_id, receipt)
-      continue
-    }
-    const existingRank = getReceiptRank(existing.type)
-    const nextRank = getReceiptRank(receipt.type)
-    if (nextRank > existingRank) {
-      map.set(receipt.message_id, receipt)
-      continue
-    }
-    if (
-      nextRank === existingRank &&
-      new Date(receipt.timestamp) > new Date(existing.timestamp)
-    ) {
-      map.set(receipt.message_id, receipt)
-    }
-  }
-  return Array.from(map.values())
-}
+type ReceiptEventStatus = "PROCESSED_BY_CLIENT" | "READ_BY_USER"
 
 export function useRatchetSync() {
-  const { masterKey, transportPrivateKey, user } = useAuth()
-  const { settings } = useSettings()
+  const { masterKey, transportPrivateKey, identityPrivateKey, user } = useAuth()
   const isSyncingRef = React.useRef(false)
   const directoryCacheRef = React.useRef(new Map<string, DirectoryEntry>())
   const [lastSync, setLastSync] = React.useState(0)
 
-  const applyReceipts = React.useCallback(
-    async (handle: string | null | undefined, receipts: ReceiptEvent[]) => {
-      if (receipts.length === 0) {
-        return false
+  const sendReceiptEvent = React.useCallback(
+    async (params: {
+      recipientHandle: string
+      recipientTransportKey: string
+      messageId: string
+      status: ReceiptEventStatus
+      timestamp: string
+    }) => {
+      if (!identityPrivateKey || !user?.handle) {
+        return
       }
-      const pending = await loadPendingReceipts(handle)
-      const combined = normalizeReceipts([...pending, ...receipts])
-      const remaining: ReceiptBase[] = []
-      let updated = false
-      for (const receipt of combined) {
-        const record = await db.messages.get(receipt.message_id)
-        if (!record) {
-          remaining.push(receipt)
-          continue
-        }
-        const currentRank = getReceiptRank(record.receiptStatus)
-        const nextRank = getReceiptRank(receipt.type)
-        if (nextRank <= currentRank) {
-          continue
-        }
-        await db.messages.update(receipt.message_id, {
-          receiptStatus: receipt.type,
-        })
-        updated = true
-      }
-      await storePendingReceipts(handle, remaining)
-      return updated
+      const signatureBody = `receipt:${params.status}:${params.timestamp}`
+      const signature = signMessage(
+        buildMessageSignaturePayload(
+          user.handle,
+          signatureBody,
+          params.messageId
+        ),
+        identityPrivateKey
+      )
+      const payload = JSON.stringify({
+        type: "receipt",
+        content: signatureBody,
+        receipt_status: params.status,
+        receipt_timestamp: params.timestamp,
+        sender_handle: user.handle,
+        sender_signature: signature,
+        sender_identity_key: getIdentityPublicKey(identityPrivateKey),
+        message_id: params.messageId,
+      })
+      const encryptedBlob = await encryptTransitEnvelope(
+        payload,
+        params.recipientTransportKey
+      )
+      await apiFetch("/messages/send", {
+        method: "POST",
+        body: {
+          recipient_handle: params.recipientHandle,
+          encrypted_blob: encryptedBlob,
+          message_id: crypto.randomUUID(),
+        },
+      })
     },
-    []
+    [identityPrivateKey, user?.handle]
   )
 
   const processSingleQueueItem = React.useCallback(
@@ -287,6 +214,40 @@ export function useRatchetSync() {
           }
         }
       }
+      let payloadReceiptStatus =
+        payload.receipt_status ?? payload.receiptStatus
+      let payloadReceiptTimestamp =
+        payload.receipt_timestamp ?? payload.receiptTimestamp
+      if (payloadType === "receipt" && typeof payload.content === "string") {
+        const signedContent = payload.content
+        if (!signedContent.startsWith("receipt:")) {
+          return
+        }
+        const parts = signedContent.split(":")
+        const signedStatus = parts[1]
+        const signedTimestamp = parts.slice(2).join(":")
+        if (
+          signedStatus !== "PROCESSED_BY_CLIENT" &&
+          signedStatus !== "READ_BY_USER"
+        ) {
+          return
+        }
+        if (
+          payloadReceiptStatus &&
+          payloadReceiptStatus !== signedStatus
+        ) {
+          return
+        }
+        if (
+          payloadReceiptTimestamp &&
+          signedTimestamp &&
+          payloadReceiptTimestamp !== signedTimestamp
+        ) {
+          return
+        }
+        payloadReceiptStatus = signedStatus as ReceiptEventStatus
+        payloadReceiptTimestamp = signedTimestamp
+      }
       const senderHandle = item.sender_handle
       let signatureVerified = false
       let directoryEntry: DirectoryEntry | null = null
@@ -313,8 +274,15 @@ export function useRatchetSync() {
       if (
         (payloadType === "edit" ||
           payloadType === "delete" ||
-          payloadType === "reaction") &&
+          payloadType === "reaction" ||
+          payloadType === "receipt") &&
         !payloadMessageId
+      ) {
+        return
+      }
+      if (
+        payloadType === "receipt" &&
+        (!payloadReceiptStatus || !payloadReceiptTimestamp)
       ) {
         return
       }
@@ -387,7 +355,13 @@ export function useRatchetSync() {
             payloadType === "reaction" ? normalizedReactionAction : undefined,
           reaction_emoji:
             payloadType === "reaction" ? payloadReactionEmoji : undefined,
+          receipt_status:
+            payloadType === "receipt" ? payloadReceiptStatus : undefined,
+          receipt_timestamp:
+            payloadType === "receipt" ? payloadReceiptTimestamp : undefined,
           message_id: payloadMessageId,
+          reply_to_message_id:
+            payload.reply_to_message_id ?? payload.replyToMessageId,
         })
       )
       
@@ -424,24 +398,23 @@ export function useRatchetSync() {
         content: contentJson,
         verified: stored.sender_signature_verified ?? authenticityVerified,
         isRead: false,
-        readReceiptSent: false,
         vaultSynced: true,
         createdAt: stored.created_at ?? item.created_at,
       })
 
       if (
-        payloadType !== "edit" &&
-        payloadType !== "delete" &&
-        payloadType !== "reaction"
+        payloadType === "message" &&
+        senderHandle &&
+        peerTransportKey &&
+        payloadMessageId
       ) {
         try {
-          await apiFetch("/receipts", {
-            method: "POST",
-            body: {
-              recipient_handle: item.sender_handle,
-              message_id: payloadMessageId ?? item.id,
-              type: "PROCESSED_BY_CLIENT",
-            },
+          await sendReceiptEvent({
+            recipientHandle: senderHandle,
+            recipientTransportKey: peerTransportKey,
+            messageId: payloadMessageId,
+            status: "PROCESSED_BY_CLIENT",
+            timestamp: new Date().toISOString(),
           })
         } catch {
           // Receipts are best-effort.
@@ -450,7 +423,7 @@ export function useRatchetSync() {
       
       setLastSync(Date.now())
     },
-    [masterKey, transportPrivateKey, user?.id, user?.handle]
+    [masterKey, transportPrivateKey, user?.id, user?.handle, sendReceiptEvent]
   )
 
   const processQueue = React.useCallback(async () => {
@@ -468,38 +441,6 @@ export function useRatchetSync() {
       setLastSync(Date.now())
     }
   }, [masterKey, transportPrivateKey, processSingleQueueItem])
-
-  const syncReceipts = React.useCallback(async () => {
-    if (!user?.handle && !user?.id) {
-      return
-    }
-    const handle = user?.handle
-    const since = await loadReceiptCursor(handle)
-    const query = since ? `?since=${encodeURIComponent(since)}` : ""
-    try {
-      const receipts = await apiFetch<ReceiptItem[]>(`/receipts${query}`)
-      const filteredReceipts = receipts.filter(
-        (r) => r.type !== "READ_BY_USER" || settings.sendReadReceipts
-      )
-      
-      let latestTimestamp = since ? new Date(since) : new Date(0)
-      for (const receipt of receipts) {
-        const receiptTime = new Date(receipt.timestamp)
-        if (
-          !Number.isNaN(receiptTime.valueOf()) &&
-          receiptTime > latestTimestamp
-        ) {
-          latestTimestamp = receiptTime
-        }
-      }
-      await applyReceipts(handle, filteredReceipts)
-      if (receipts.length > 0) {
-        await storeReceiptCursor(handle, latestTimestamp.toISOString())
-      }
-    } finally {
-      setLastSync(Date.now())
-    }
-  }, [applyReceipts, user?.handle, user?.id, settings.sendReadReceipts])
 
   const syncVault = React.useCallback(async () => {
     if (!masterKey) {
@@ -531,7 +472,6 @@ export function useRatchetSync() {
           }),
           verified: item.sender_signature_verified,
           isRead: false,
-          readReceiptSent: false,
           vaultSynced: true,
           createdAt: item.created_at,
         }))
@@ -620,18 +560,12 @@ export function useRatchetSync() {
     } catch {
       // Best-effort.
     }
-    try {
-      await syncReceipts()
-    } catch {
-      // Best-effort.
-    }
   }, [
     masterKey,
     transportPrivateKey,
     processQueue,
     syncVault,
     syncOutgoingVault,
-    syncReceipts,
   ])
 
   React.useEffect(() => {
@@ -656,14 +590,9 @@ export function useRatchetSync() {
       } catch {
         // Best-effort.
       }
-      try {
-        await syncReceipts()
-      } catch {
-        // Best-effort.
-      }
     }
     void runVaultSync()
-  }, [masterKey, syncVault, syncOutgoingVault, syncReceipts])
+  }, [masterKey, syncVault, syncOutgoingVault])
 
   React.useEffect(() => {
     if (!masterKey || !transportPrivateKey) {
@@ -687,33 +616,18 @@ export function useRatchetSync() {
         void runSync()
       }
     }
-    const handleReceiptEvent = async (payload: ReceiptEvent) => {
-      const handle = user?.handle
-      if (!payload?.message_id || !payload?.type) {
-        return
-      }
-      if (payload.type === "READ_BY_USER" && !settings.sendReadReceipts) {
-        return
-      }
-      const updated = await applyReceipts(handle, [payload])
-      if (updated) {
-        setLastSync(Date.now())
-      }
-    }
     socket.on("connect", () => {
     })
     socket.on("connect_error", (err) => {
     })
     socket.on("INCOMING_MESSAGE", handler)
-    socket.on("RECEIPT_UPDATE", handleReceiptEvent)
     return () => {
       socket.off("connect")
       socket.off("connect_error")
       socket.off("INCOMING_MESSAGE", handler)
-      socket.off("RECEIPT_UPDATE", handleReceiptEvent)
       socket.disconnect()
     }
-  }, [masterKey, transportPrivateKey, runSync, applyReceipts, user?.handle, processSingleQueueItem, settings.sendReadReceipts])
+  }, [masterKey, transportPrivateKey, runSync, user?.handle, processSingleQueueItem])
 
-  return { processQueue, syncVault, syncReceipts, runSync, lastSync }
+  return { processQueue, syncVault, runSync, lastSync }
 }

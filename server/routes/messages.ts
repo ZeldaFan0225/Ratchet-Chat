@@ -365,14 +365,6 @@ export const createMessagesRouter = (
       }
 
       const senderVaultStored = await storeSenderVault();
-      await prisma.receipt.create({
-        data: {
-          recipient_id: req.user.id,
-          message_id,
-          type: ReceiptType.DELIVERED_TO_SERVER,
-        },
-      });
-
       return res.status(202).json({
         recipient_handle: recipientParsed.handle,
         relayed: true,
@@ -419,14 +411,6 @@ export const createMessagesRouter = (
           senderVaultStored = true;
         }
       }
-
-      await tx.receipt.create({
-        data: {
-          recipient_id: req.user!.id,
-          message_id,
-          type: ReceiptType.DELIVERED_TO_SERVER,
-        },
-      });
 
       return { created, senderVaultStored };
     });

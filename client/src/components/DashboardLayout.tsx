@@ -5,6 +5,7 @@ import { createPortal } from "react-dom"
 import {
   Check,
   CheckCheck,
+  CornerUpLeft,
   Download,
   FileIcon,
   Info,
@@ -102,16 +103,22 @@ type StoredMessage = {
   text: string
   attachments?: Attachment[]
   timestamp: string
-  kind?: "message" | "edit" | "delete" | "reaction"
+  kind?: "message" | "edit" | "delete" | "reaction" | "receipt"
   editedAt?: string
   deletedAt?: string
   reactionAction?: "add" | "remove"
+  deliveredAt?: string
+  processedAt?: string
+  readAt?: string
+  receiptStatus?: "PROCESSED_BY_CLIENT" | "READ_BY_USER"
+  receiptTimestamp?: string
+  replyTo?: {
+    messageId: string
+  }
   reactions?: ReactionSummary[]
   verified: boolean
   isRead: boolean
-  receiptStatus?: MessageRecord["receiptStatus"]
   messageId?: string
-  readReceiptSent?: boolean
 }
 
 type DirectoryEntry = {
@@ -203,7 +210,7 @@ async function decodeMessageRecord(
       peerTransportKey?: string
       messageId?: string
       message_id?: string
-      type?: "edit" | "delete" | "reaction" | "message"
+      type?: "edit" | "delete" | "reaction" | "receipt" | "message"
       edited_at?: string
       editedAt?: string
       deleted_at?: string
@@ -214,6 +221,24 @@ async function decodeMessageRecord(
       reactionEmoji?: string
       action?: "add" | "remove"
       emoji?: string
+      delivered_at?: string
+      deliveredAt?: string
+      processed_at?: string
+      processedAt?: string
+      read_at?: string
+      readAt?: string
+      receipt_status?: "PROCESSED_BY_CLIENT" | "READ_BY_USER"
+      receiptStatus?: "PROCESSED_BY_CLIENT" | "READ_BY_USER"
+      receipt_timestamp?: string
+      receiptTimestamp?: string
+      reply_to_message_id?: string
+      replyToMessageId?: string
+      reply_to_text?: string
+      replyToText?: string
+      reply_to_sender_handle?: string
+      replyToSenderHandle?: string
+      reply_to_sender_name?: string
+      replyToSenderName?: string
     } = {}
     try {
       payload = JSON.parse(plaintext) as typeof payload
@@ -233,6 +258,8 @@ async function decodeMessageRecord(
         ? "delete"
         : payload.type === "reaction"
         ? "reaction"
+        : payload.type === "receipt"
+        ? "receipt"
         : "message"
     const direction = payload.direction ?? "in"
     const isRead = record.isRead ?? direction === "out"
@@ -240,6 +267,8 @@ async function decodeMessageRecord(
       payload.messageId ??
       payload.message_id ??
       (direction === "out" ? record.id : undefined)
+    const replyMessageId =
+      payload.reply_to_message_id ?? payload.replyToMessageId
     const fallbackHandle = fallbackPeerHandle
     let resolvedHandle =
       payload.peerHandle ?? payload.peerId ?? fallbackHandle
@@ -264,11 +293,19 @@ async function decodeMessageRecord(
         payload.reaction_action ??
         payload.reactionAction ??
         payload.action,
+      deliveredAt: payload.delivered_at ?? payload.deliveredAt,
+      processedAt: payload.processed_at ?? payload.processedAt,
+      readAt: payload.read_at ?? payload.readAt,
+      receiptStatus: payload.receipt_status ?? payload.receiptStatus,
+      receiptTimestamp: payload.receipt_timestamp ?? payload.receiptTimestamp,
+      replyTo: replyMessageId
+        ? {
+            messageId: replyMessageId,
+          }
+        : undefined,
       verified: record.verified,
       isRead,
-      receiptStatus: record.receiptStatus,
       messageId,
-      readReceiptSent: record.readReceiptSent,
     }
   } catch {
     return null
@@ -276,7 +313,11 @@ async function decodeMessageRecord(
 }
 
 function getEventTimestamp(message: StoredMessage) {
-  const value = message.editedAt ?? message.deletedAt ?? message.timestamp
+  const value =
+    message.editedAt ??
+    message.deletedAt ??
+    message.receiptTimestamp ??
+    message.timestamp
   const parsed = new Date(value)
   return Number.isNaN(parsed.valueOf()) ? 0 : parsed.valueOf()
 }
@@ -291,6 +332,13 @@ function applyMessageEvents(messages: StoredMessage[]) {
   const reactions = messages.filter(
     (message) =>
       message.kind === "reaction" && message.messageId && message.text
+  )
+  const receipts = messages.filter(
+    (message) =>
+      message.kind === "receipt" &&
+      message.messageId &&
+      message.receiptStatus &&
+      message.receiptTimestamp
   )
   const latestEdits = new Map<string, StoredMessage>()
   for (const edit of edits) {
@@ -331,12 +379,36 @@ function applyMessageEvents(messages: StoredMessage[]) {
     bucket.set(reaction.text, state)
     reactionsByMessage.set(key, bucket)
   }
+  const latestProcessed = new Map<string, StoredMessage>()
+  const latestRead = new Map<string, StoredMessage>()
+  for (const receipt of receipts) {
+    if (!receipt.messageId) continue
+    if (receipt.receiptStatus === "PROCESSED_BY_CLIENT") {
+      const existing = latestProcessed.get(receipt.messageId)
+      if (
+        !existing ||
+        getEventTimestamp(receipt) > getEventTimestamp(existing)
+      ) {
+        latestProcessed.set(receipt.messageId, receipt)
+      }
+    }
+    if (receipt.receiptStatus === "READ_BY_USER") {
+      const existing = latestRead.get(receipt.messageId)
+      if (
+        !existing ||
+        getEventTimestamp(receipt) > getEventTimestamp(existing)
+      ) {
+        latestRead.set(receipt.messageId, receipt)
+      }
+    }
+  }
   const next: StoredMessage[] = []
   for (const message of messages) {
     if (
       message.kind === "edit" ||
       message.kind === "delete" ||
-      message.kind === "reaction"
+      message.kind === "reaction" ||
+      message.kind === "receipt"
     ) {
       continue
     }
@@ -364,6 +436,22 @@ function applyMessageEvents(messages: StoredMessage[]) {
       continue
     }
     const edit = targetId ? latestEdits.get(targetId) : null
+    const processedReceipt = targetId ? latestProcessed.get(targetId) : null
+    const readReceipt = targetId ? latestRead.get(targetId) : null
+    const processedAt =
+      processedReceipt &&
+      processedReceipt.verified &&
+      processedReceipt.peerHandle === message.peerHandle &&
+      processedReceipt.direction !== message.direction
+        ? processedReceipt.receiptTimestamp
+        : message.processedAt
+    const readAt =
+      readReceipt &&
+      readReceipt.verified &&
+      readReceipt.peerHandle === message.peerHandle &&
+      readReceipt.direction !== message.direction
+        ? readReceipt.receiptTimestamp
+        : message.readAt
     if (
       edit &&
       edit.verified &&
@@ -376,16 +464,37 @@ function applyMessageEvents(messages: StoredMessage[]) {
         editedAt: edit.editedAt ?? edit.timestamp,
         attachments: message.attachments,
         reactions: reactionList,
+        processedAt,
+        readAt,
       })
       continue
     }
     if (reactionList && reactionList.length > 0) {
-      next.push({ ...message, reactions: reactionList })
+      next.push({ ...message, reactions: reactionList, processedAt, readAt })
     } else {
-      next.push(message)
+      next.push({ ...message, processedAt, readAt })
     }
   }
   return next
+}
+
+function truncateText(value: string, max = 140) {
+  if (value.length <= max) return value
+  return value.slice(0, Math.max(0, max - 3)) + "..."
+}
+
+function getReplyPreviewText(message: StoredMessage) {
+  const trimmed = message.text?.trim()
+  if (trimmed) {
+    return trimmed
+  }
+  if (message.attachments?.length) {
+    if (message.attachments.length === 1) {
+      return message.attachments[0].filename || "Attachment"
+    }
+    return `${message.attachments.length} attachments`
+  }
+  return "Message"
 }
 
 const DELETE_SIGNATURE_BODY = "ratchet-chat:delete"
@@ -423,6 +532,7 @@ export function DashboardLayout() {
   const [messages, setMessages] = React.useState<StoredMessage[]>([])
   const [composeText, setComposeText] = React.useState("")
   const [editingMessage, setEditingMessage] = React.useState<StoredMessage | null>(null)
+  const [replyToMessage, setReplyToMessage] = React.useState<StoredMessage | null>(null)
   const [reactionPickerId, setReactionPickerId] = React.useState<string | null>(null)
   const [startError, setStartError] = React.useState<string | null>(null)
   const [sendError, setSendError] = React.useState<string | null>(null)
@@ -437,6 +547,8 @@ export function DashboardLayout() {
   const [attachment, setAttachment] = React.useState<{ name: string; type: string; size: number; data: string } | null>(null)
   const [previewImage, setPreviewImage] = React.useState<string | null>(null)
   const [pendingLink, setPendingLink] = React.useState<string | null>(null)
+  const [activeActionMessageId, setActiveActionMessageId] = React.useState<string | null>(null)
+  const [isTouchActions, setIsTouchActions] = React.useState(false)
   const scrollRef = React.useRef<HTMLDivElement>(null)
   const typingTimeoutRef = React.useRef<NodeJS.Timeout | null>(null)
   const fileInputRef = React.useRef<HTMLInputElement>(null)
@@ -450,9 +562,165 @@ export function DashboardLayout() {
     height: number
   } | null>(null)
   const emojiTheme = theme === "dark" ? Theme.DARK : theme === "system" ? Theme.AUTO : Theme.LIGHT
+  React.useEffect(() => {
+    if (typeof window === "undefined") {
+      return
+    }
+    const media = window.matchMedia("(hover: none) and (pointer: coarse)")
+    const update = () => setIsTouchActions(media.matches)
+    update()
+    if (media.addEventListener) {
+      media.addEventListener("change", update)
+    } else {
+      media.addListener(update)
+    }
+    return () => {
+      if (media.removeEventListener) {
+        media.removeEventListener("change", update)
+      } else {
+        media.removeListener(update)
+      }
+    }
+  }, [])
   const visibleMessages = React.useMemo(
     () => applyMessageEvents(messages),
     [messages]
+  )
+  const buildReplyPayload = React.useCallback(
+    (message: StoredMessage) => {
+      const replyMessageId = message.messageId ?? message.id
+      if (!replyMessageId) {
+        return null
+      }
+      return {
+        reply_to_message_id: replyMessageId,
+      }
+    },
+    []
+  )
+
+  const updateMessagePayload = React.useCallback(
+    async (
+      messageId: string,
+      updates: { deliveredAt?: string; processedAt?: string; readAt?: string }
+    ) => {
+      if (!masterKey) {
+        return null
+      }
+      const record = await db.messages.get(messageId)
+      if (!record) {
+        return null
+      }
+      let envelope: { encrypted_blob: string; iv: string } | null = null
+      try {
+        envelope = JSON.parse(record.content) as {
+          encrypted_blob: string
+          iv: string
+        }
+      } catch {
+        return null
+      }
+      if (!envelope?.encrypted_blob || !envelope.iv) {
+        return null
+      }
+      let payload: Record<string, unknown> = {}
+      try {
+        const plaintext = await decryptString(masterKey, {
+          ciphertext: envelope.encrypted_blob,
+          iv: envelope.iv,
+        })
+        payload = JSON.parse(plaintext) as Record<string, unknown>
+      } catch {
+        return null
+      }
+      const nextPayload = { ...payload }
+      if (updates.deliveredAt) {
+        nextPayload.delivered_at = updates.deliveredAt
+      }
+      if (updates.processedAt) {
+        nextPayload.processed_at = updates.processedAt
+      }
+      if (updates.readAt) {
+        nextPayload.read_at = updates.readAt
+      }
+      const encrypted = await encryptString(masterKey, JSON.stringify(nextPayload))
+      const contentJson = JSON.stringify({
+        encrypted_blob: encrypted.ciphertext,
+        iv: encrypted.iv,
+      })
+      await db.messages.update(messageId, { content: contentJson })
+      const decoded = await decodeMessageRecord(
+        { ...record, content: contentJson },
+        masterKey,
+        record.senderId
+      )
+      if (decoded) {
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === messageId ? { ...message, ...decoded } : message
+          )
+        )
+      }
+      return decoded
+    },
+    [masterKey]
+  )
+
+  const sendReadReceipt = React.useCallback(
+    async (
+      message: StoredMessage,
+      timestamp: string,
+      fallbackTransportKey?: string
+    ) => {
+      if (!identityPrivateKey || !user?.handle) {
+        return false
+      }
+      const targetMessageId = message.messageId ?? message.id
+      if (!targetMessageId) {
+        return false
+      }
+      const recipientTransportKey =
+        message.peerTransportKey ?? fallbackTransportKey
+      if (!recipientTransportKey) {
+        return false
+      }
+      const signatureBody = `receipt:READ_BY_USER:${timestamp}`
+      const signature = signMessage(
+        buildMessageSignaturePayload(
+          user.handle,
+          signatureBody,
+          targetMessageId
+        ),
+        identityPrivateKey
+      )
+      const payload = JSON.stringify({
+        type: "receipt",
+        content: signatureBody,
+        receipt_status: "READ_BY_USER",
+        receipt_timestamp: timestamp,
+        sender_handle: user.handle,
+        sender_signature: signature,
+        sender_identity_key: getIdentityPublicKey(identityPrivateKey),
+        message_id: targetMessageId,
+      })
+      const encryptedBlob = await encryptTransitEnvelope(
+        payload,
+        recipientTransportKey
+      )
+      await apiFetch("/messages/send", {
+        method: "POST",
+        body: {
+          recipient_handle: message.peerHandle,
+          encrypted_blob: encryptedBlob,
+          message_id: crypto.randomUUID(),
+        },
+      })
+      return true
+    },
+    [
+      identityPrivateKey,
+      user?.handle,
+    ]
   )
 
   const updateReactionPickerPosition = React.useCallback(() => {
@@ -560,6 +828,17 @@ export function DashboardLayout() {
     const lower = chatSearchQuery.toLowerCase()
     return activeMessagesRaw.filter((msg) => msg.text.toLowerCase().includes(lower))
   }, [activeMessagesRaw, chatSearchQuery])
+
+  const activeMessageLookup = React.useMemo(() => {
+    const map = new Map<string, StoredMessage>()
+    for (const message of activeMessagesRaw) {
+      const key = message.messageId ?? message.id
+      if (key) {
+        map.set(key, message)
+      }
+    }
+    return map
+  }, [activeMessagesRaw])
 
   const reactionPickerMessage = React.useMemo(() => {
     if (!reactionPickerId) {
@@ -767,6 +1046,25 @@ export function DashboardLayout() {
   }, [activeContact, editingMessage])
 
   React.useEffect(() => {
+    if (!replyToMessage) {
+      return
+    }
+    if (!activeContact || replyToMessage.peerHandle !== activeContact.handle) {
+      setReplyToMessage(null)
+    }
+  }, [activeContact, replyToMessage])
+
+  React.useEffect(() => {
+    if (!replyToMessage) {
+      return
+    }
+    const targetId = replyToMessage.messageId ?? replyToMessage.id
+    if (!targetId || !activeMessageLookup.has(targetId)) {
+      setReplyToMessage(null)
+    }
+  }, [replyToMessage, activeMessageLookup])
+
+  React.useEffect(() => {
     if (!reactionPickerId) {
       return
     }
@@ -783,6 +1081,22 @@ export function DashboardLayout() {
     document.addEventListener("mousedown", handleClick)
     return () => document.removeEventListener("mousedown", handleClick)
   }, [reactionPickerId])
+
+  React.useEffect(() => {
+    if (!isTouchActions || !activeActionMessageId) {
+      return
+    }
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement
+      const container = target.closest("[data-message-id]")
+      const containerId = container?.getAttribute("data-message-id")
+      if (!container || containerId !== activeActionMessageId) {
+        setActiveActionMessageId(null)
+      }
+    }
+    document.addEventListener("pointerdown", handlePointerDown)
+    return () => document.removeEventListener("pointerdown", handlePointerDown)
+  }, [activeActionMessageId, isTouchActions])
 
   React.useLayoutEffect(() => {
     if (!reactionPickerId) {
@@ -814,6 +1128,7 @@ export function DashboardLayout() {
 
   React.useEffect(() => {
     setReactionPickerId(null)
+    setActiveActionMessageId(null)
   }, [activeContact?.handle])
 
   React.useEffect(() => {
@@ -926,13 +1241,15 @@ export function DashboardLayout() {
       (message) => message.direction === "in" && !message.isRead
     )
     const unreadIds = unreadMessages.map((message) => message.id)
-    const receiptTargets = activeMessagesRaw.filter(
-      (message) =>
-        message.direction === "in" &&
-        message.messageId &&
-        message.peerHandle &&
-        !message.readReceiptSent
-    )
+    const receiptTargets = settings.sendReadReceipts
+      ? activeMessagesRaw.filter(
+          (message) =>
+            message.direction === "in" &&
+            message.messageId &&
+            message.peerHandle &&
+            !message.readAt
+        )
+      : []
     if (unreadIds.length === 0 && receiptTargets.length === 0) {
       return
     }
@@ -956,37 +1273,25 @@ export function DashboardLayout() {
       if (!settings.sendReadReceipts) return
 
       const sentIds: string[] = []
+      const readAt = new Date().toISOString()
       for (const message of receiptTargets) {
-        const messageId = message.messageId
-        const peerHandle = message.peerHandle
-        if (!messageId || !peerHandle) {
-          continue
-        }
         try {
-          await apiFetch("/receipts", {
-            method: "POST",
-            body: {
-              recipient_handle: peerHandle,
-              message_id: messageId,
-              type: "READ_BY_USER",
-            },
-          })
+          const didSend = await sendReadReceipt(
+            message,
+            readAt,
+            activeContact?.publicTransportKey
+          )
+          if (!didSend) {
+            continue
+          }
           sentIds.push(message.id)
         } catch {
           // Best-effort: keep unsent receipts for the next open.
         }
       }
       if (sentIds.length > 0) {
-        await db.messages
-          .where("id")
-          .anyOf(sentIds)
-          .modify({ readReceiptSent: true })
-        setMessages((current) =>
-          current.map((message) =>
-            sentIds.includes(message.id)
-              ? { ...message, readReceiptSent: true }
-              : message
-          )
+        await Promise.all(
+          sentIds.map((id) => updateMessagePayload(id, { readAt }))
         )
       }
     }
@@ -1002,7 +1307,13 @@ export function DashboardLayout() {
       document.removeEventListener("visibilitychange", handleVisibilityChange)
       window.removeEventListener("focus", handleFocus)
     }
-  }, [activeContact, activeMessagesRaw, settings.sendReadReceipts])
+  }, [
+    activeContact,
+    activeMessagesRaw,
+    sendReadReceipt,
+    settings.sendReadReceipts,
+    updateMessagePayload,
+  ])
 
   const handleDeleteChat = React.useCallback(async () => {
     if (!activeContact || !user) return
@@ -1137,10 +1448,36 @@ export function DashboardLayout() {
     reader.readAsDataURL(file)
   }
 
+  const beginReply = React.useCallback(
+    (message: StoredMessage) => {
+      if (!activeContact) {
+        return
+      }
+      if (editingMessage) {
+        return
+      }
+      if (message.peerHandle !== activeContact.handle) {
+        return
+      }
+      setReplyToMessage(message)
+      setSendError(null)
+      setReactionPickerId(null)
+      setActiveActionMessageId(null)
+      requestAnimationFrame(() => textareaRef.current?.focus())
+    },
+    [activeContact, editingMessage]
+  )
+
+  const cancelReply = React.useCallback(() => {
+    setReplyToMessage(null)
+  }, [])
+
   const beginEdit = React.useCallback((message: StoredMessage) => {
     if (message.direction !== "out" || !message.text) {
       return
     }
+    setReplyToMessage(null)
+    setActiveActionMessageId(null)
     setEditingMessage(message)
     setComposeText(message.text)
     setSendError(null)
@@ -1156,6 +1493,26 @@ export function DashboardLayout() {
     setSendError(null)
     setReactionPickerId(null)
   }, [])
+
+  const handleMessageTap = React.useCallback(
+    (event: React.MouseEvent, message: StoredMessage) => {
+      if (!isTouchActions) {
+        return
+      }
+      const target = event.target as HTMLElement
+      if (target.closest('[data-no-action-toggle="true"]')) {
+        return
+      }
+      if (target.closest("a,button,input,textarea,select,label")) {
+        return
+      }
+      setReactionPickerId(null)
+      setActiveActionMessageId((current) =>
+        current === message.id ? null : message.id
+      )
+    },
+    [isTouchActions]
+  )
 
   const handleSendMessage = React.useCallback(async () => {
     const trimmed = composeText.trim()
@@ -1175,6 +1532,7 @@ export function DashboardLayout() {
       return
     }
     setSendError(null)
+    setActiveActionMessageId(null)
     setIsBusy(true)
     try {
       const messageId = crypto.randomUUID()
@@ -1189,6 +1547,9 @@ export function DashboardLayout() {
         size: attachment.size,
         data: attachment.data
       }] : undefined
+      const replyPayload = replyToMessage
+        ? buildReplyPayload(replyToMessage)
+        : null
 
       const payload = JSON.stringify({
         content: trimmed,
@@ -1196,7 +1557,8 @@ export function DashboardLayout() {
         sender_signature: signature,
         sender_identity_key: getIdentityPublicKey(identityPrivateKey),
         message_id: messageId,
-        attachments
+        attachments,
+        ...(replyPayload ?? {}),
       })
       const encryptedBlob = await encryptTransitEnvelope(
         payload,
@@ -1213,6 +1575,7 @@ export function DashboardLayout() {
         direction: "out",
         timestamp: new Date().toISOString(),
         message_id: messageId,
+        ...(replyPayload ?? {}),
       })
       const encryptedLocal = await encryptString(masterKey, localPayload)
       const localRecord: MessageRecord = {
@@ -1225,7 +1588,6 @@ export function DashboardLayout() {
         }),
         verified: true,
         isRead: true,
-        receiptStatus: undefined,
         vaultSynced: false,
         createdAt: new Date().toISOString(),
       }
@@ -1253,21 +1615,13 @@ export function DashboardLayout() {
       })
       const vaultStored = Boolean(sendResponse?.sender_vault_stored)
       await db.messages.update(messageId, {
-        receiptStatus: "DELIVERED_TO_SERVER",
         vaultSynced: vaultStored,
       })
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === messageId
-            ? {
-                ...message,
-                receiptStatus: "DELIVERED_TO_SERVER",
-                vaultSynced: vaultStored,
-              }
-            : message
-        )
-      )
+      await updateMessagePayload(messageId, {
+        deliveredAt: new Date().toISOString(),
+      })
       setComposeText("")
+      setReplyToMessage(null)
       setAttachment(null)
       if (fileInputRef.current) fileInputRef.current.value = ""
     } catch (error) {
@@ -1277,7 +1631,18 @@ export function DashboardLayout() {
     } finally {
       setIsBusy(false)
     }
-  }, [activeContact, composeText, identityPrivateKey, masterKey, user?.handle, attachment])
+  }, [
+    activeContact,
+    composeText,
+    identityPrivateKey,
+    masterKey,
+    updateMessagePayload,
+    user?.handle,
+    user?.id,
+    attachment,
+    replyToMessage,
+    buildReplyPayload,
+  ])
 
   const handleEdit = React.useCallback(async () => {
     if (!editingMessage) {
@@ -1314,6 +1679,7 @@ export function DashboardLayout() {
       return
     }
     setSendError(null)
+    setActiveActionMessageId(null)
     setIsBusy(true)
     try {
       const editedAt = new Date().toISOString()
@@ -1359,7 +1725,6 @@ export function DashboardLayout() {
         }),
         verified: true,
         isRead: true,
-        receiptStatus: undefined,
         vaultSynced: false,
         createdAt: editedAt,
       }
@@ -1387,7 +1752,6 @@ export function DashboardLayout() {
       })
       const vaultStored = Boolean(sendResponse?.sender_vault_stored)
       await db.messages.update(editEventId, {
-        receiptStatus: "DELIVERED_TO_SERVER",
         vaultSynced: vaultStored,
       })
       if (socket) {
@@ -1453,6 +1817,7 @@ export function DashboardLayout() {
         cancelEdit()
       }
       setReactionPickerId(null)
+      setActiveActionMessageId(null)
       setSendError(null)
       setIsBusy(true)
       try {
@@ -1497,16 +1862,15 @@ export function DashboardLayout() {
           id: deleteEventId,
           ownerId: user?.id ?? user?.handle ?? "me",
           senderId: user?.handle ?? "me",
-          content: JSON.stringify({
-            encrypted_blob: encryptedLocal.ciphertext,
-            iv: encryptedLocal.iv,
-          }),
-          verified: true,
-          isRead: true,
-          receiptStatus: undefined,
-          vaultSynced: false,
-          createdAt: deletedAt,
-        }
+        content: JSON.stringify({
+          encrypted_blob: encryptedLocal.ciphertext,
+          iv: encryptedLocal.iv,
+        }),
+        verified: true,
+        isRead: true,
+        vaultSynced: false,
+        createdAt: deletedAt,
+      }
         await db.messages.put(localRecord)
         const decoded = await decodeMessageRecord(
           localRecord,
@@ -1529,11 +1893,10 @@ export function DashboardLayout() {
             sender_vault_signature_verified: true,
           },
         })
-        const vaultStored = Boolean(sendResponse?.sender_vault_stored)
-        await db.messages.update(deleteEventId, {
-          receiptStatus: "DELIVERED_TO_SERVER",
-          vaultSynced: vaultStored,
-        })
+      const vaultStored = Boolean(sendResponse?.sender_vault_stored)
+      await db.messages.update(deleteEventId, {
+        vaultSynced: vaultStored,
+      })
         if (socket) {
           socket.emit("signal", {
             recipient_handle: activeContact.handle,
@@ -1592,6 +1955,7 @@ export function DashboardLayout() {
       }
       const reactionAction = action === "remove" ? "remove" : "add"
       setSendError(null)
+      setActiveActionMessageId(null)
       setIsBusy(true)
       try {
         const reactedAt = new Date().toISOString()
@@ -1638,16 +2002,15 @@ export function DashboardLayout() {
           id: reactionEventId,
           ownerId: user?.id ?? user?.handle ?? "me",
           senderId: user?.handle ?? "me",
-          content: JSON.stringify({
-            encrypted_blob: encryptedLocal.ciphertext,
-            iv: encryptedLocal.iv,
-          }),
-          verified: true,
-          isRead: true,
-          receiptStatus: undefined,
-          vaultSynced: false,
-          createdAt: reactedAt,
-        }
+        content: JSON.stringify({
+          encrypted_blob: encryptedLocal.ciphertext,
+          iv: encryptedLocal.iv,
+        }),
+        verified: true,
+        isRead: true,
+        vaultSynced: false,
+        createdAt: reactedAt,
+      }
         await db.messages.put(localRecord)
         const decoded = await decodeMessageRecord(
           localRecord,
@@ -1670,11 +2033,10 @@ export function DashboardLayout() {
             sender_vault_signature_verified: true,
           },
         })
-        const vaultStored = Boolean(sendResponse?.sender_vault_stored)
-        await db.messages.update(reactionEventId, {
-          receiptStatus: "DELIVERED_TO_SERVER",
-          vaultSynced: vaultStored,
-        })
+      const vaultStored = Boolean(sendResponse?.sender_vault_stored)
+      await db.messages.update(reactionEventId, {
+        vaultSynced: vaultStored,
+      })
         if (socket) {
           socket.emit("signal", {
             recipient_handle: activeContact.handle,
@@ -1706,6 +2068,20 @@ export function DashboardLayout() {
     }
     await handleSendMessage()
   }, [editingMessage, handleEdit, handleSendMessage])
+
+  const replyTargetForComposer = replyToMessage
+    ? activeMessageLookup.get(replyToMessage.messageId ?? replyToMessage.id)
+    : null
+  const replyPreviewText = replyTargetForComposer
+    ? truncateText(getReplyPreviewText(replyTargetForComposer), 120)
+    : "Message deleted"
+  const replySenderLabel = replyTargetForComposer
+    ? replyTargetForComposer.direction === "out"
+      ? "You"
+      : replyTargetForComposer.peerUsername ??
+        replyTargetForComposer.peerHandle ??
+        "Unknown"
+    : "Unknown"
 
   const portalRoot =
     typeof document !== "undefined" ? document.body : null
@@ -1884,9 +2260,33 @@ export function DashboardLayout() {
               )}
               {activeMessages.map((message) => {
                 const meta = formatTimestamp(message.timestamp)
-                const receiptStatus =
-                  message.direction === "out" ? message.receiptStatus ?? null : null
+                const deliveredAt =
+                  message.direction === "out" ? message.deliveredAt : null
+                const processedAt =
+                  message.direction === "out" ? message.processedAt : null
+                const readAt = message.direction === "out" ? message.readAt : null
+                const receiptState = readAt
+                  ? "READ"
+                  : processedAt
+                  ? "PROCESSED"
+                  : deliveredAt
+                  ? "DELIVERED"
+                  : null
                 const isPickerOpen = reactionPickerId === message.id
+                const replyTarget = message.replyTo?.messageId
+                  ? activeMessageLookup.get(message.replyTo.messageId)
+                  : null
+                const replySender = replyTarget
+                  ? replyTarget.direction === "out"
+                    ? "You"
+                    : replyTarget.peerUsername ?? replyTarget.peerHandle
+                  : null
+                const replyPreview = replyTarget
+                  ? truncateText(getReplyPreviewText(replyTarget), 90)
+                  : "Message deleted"
+                const showActions = isTouchActions
+                  ? activeActionMessageId === message.id
+                  : isPickerOpen
                 return (
                   <div
                     key={message.id}
@@ -1905,6 +2305,7 @@ export function DashboardLayout() {
                           ? "flex-row-reverse"
                           : "flex-row"
                       )}
+                      data-message-id={message.id}
                     >
                       <div
                         className={cn(
@@ -1916,16 +2317,57 @@ export function DashboardLayout() {
                       >
                         <div
                           className={cn(
-                            "w-fit max-w-full pl-3 pr-5 py-2.5 text-sm leading-relaxed shadow-sm transition-all duration-500 break-words [word-break:break-word] overflow-hidden",
+                            "w-fit max-w-full px-2.5 py-2.5 text-sm leading-relaxed shadow-sm transition-all duration-500 break-words [word-break:break-word] overflow-hidden",
                             highlightedMessageId === message.id &&
                               "ring-2 ring-emerald-500 ring-offset-2 dark:ring-offset-slate-900 scale-[1.02]",
                             message.direction === "out"
                               ? "bg-emerald-100 dark:bg-emerald-900 text-foreground rounded-2xl rounded-br-sm"
                               : "bg-card dark:bg-muted text-foreground rounded-2xl rounded-bl-sm"
                           )}
+                          onClick={(event) => handleMessageTap(event, message)}
                         >
+                          {message.replyTo?.messageId ? (
+                            <div
+                              data-no-action-toggle="true"
+                              role={replyTarget ? "button" : undefined}
+                              onClick={() => {
+                                if (replyTarget) {
+                                  setScrollToMessageId(replyTarget.id)
+                                }
+                              }}
+                              className={cn(
+                                "mb-2 flex flex-col gap-0.5 rounded-md px-2 py-1 text-[11px]",
+                                message.direction === "out"
+                                  ? "bg-emerald-300/70 text-emerald-950 dark:bg-emerald-800/70 dark:text-emerald-100"
+                                  : "bg-slate-200/80 text-slate-700 dark:bg-slate-700/60 dark:text-slate-200",
+                                replyTarget &&
+                                  (message.direction === "out"
+                                    ? "cursor-pointer hover:bg-emerald-300/90 dark:hover:bg-emerald-800/90"
+                                    : "cursor-pointer hover:bg-slate-200/95 dark:hover:bg-slate-700/80")
+                              )}
+                            >
+                              {replyTarget ? (
+                                <>
+                                  <span className="font-semibold">
+                                    Replying to {replySender}
+                                  </span>
+                                  <span className="truncate text-muted-foreground">
+                                    {replyPreview}
+                                  </span>
+                                </>
+                              ) : (
+                                <span className="text-muted-foreground">
+                                  Message deleted
+                                </span>
+                              )}
+                            </div>
+                          ) : null}
                           {message.attachments?.map((att, i) => (
-                            <div key={i} className="mb-2 rounded-lg overflow-hidden">
+                            <div
+                              key={i}
+                              className="mb-2 rounded-lg overflow-hidden"
+                              data-no-action-toggle="true"
+                            >
                               {att.mimeType.startsWith("image/") ? (
                                 // eslint-disable-next-line @next/next/no-img-element
                                 <img
@@ -1994,21 +2436,21 @@ export function DashboardLayout() {
                                 aria-label="Verified Signature"
                               />
                             )}
-                            {receiptStatus ? (
-                              receiptStatus === "DELIVERED_TO_SERVER" ? (
-                                <Check className="h-3 w-3" aria-label="Sent" />
-                              ) : receiptStatus === "PROCESSED_BY_CLIENT" ? (
-                                <CheckCheck
-                                  className="h-3 w-3"
-                                  aria-label="Delivered"
-                                />
-                              ) : receiptStatus === "READ_BY_USER" ? (
-                                <CheckCheck
-                                  className="h-3 w-3 text-sky-500"
-                                  aria-label="Read"
-                                />
-                              ) : null
-                            ) : null}
+                          {receiptState ? (
+                            receiptState === "DELIVERED" ? (
+                              <Check className="h-3 w-3" aria-label="Sent" />
+                            ) : receiptState === "PROCESSED" ? (
+                              <CheckCheck
+                                className="h-3 w-3"
+                                aria-label="Delivered"
+                              />
+                            ) : receiptState === "READ" ? (
+                              <CheckCheck
+                                className="h-3 w-3 text-sky-500"
+                                aria-label="Read"
+                              />
+                            ) : null
+                          ) : null}
                           </div>
                         </div>
                         {message.reactions && message.reactions.length > 0 ? (
@@ -2053,7 +2495,10 @@ export function DashboardLayout() {
                       <div
                         className={cn(
                           "relative flex items-center opacity-0 transition-opacity duration-200 group-hover:opacity-100",
-                          isPickerOpen && "opacity-100"
+                          (isPickerOpen || showActions) && "opacity-100",
+                          isTouchActions &&
+                            !(isPickerOpen || showActions) &&
+                            "pointer-events-none"
                         )}
                       >
                         <Tooltip>
@@ -2069,6 +2514,7 @@ export function DashboardLayout() {
                                   return
                                 }
                                 reactionPickerAnchorRef.current = event.currentTarget
+                                setActiveActionMessageId(message.id)
                                 setReactionPickerId(message.id)
                               }}
                               disabled={Boolean(editingMessage) || isBusy}
@@ -2078,6 +2524,22 @@ export function DashboardLayout() {
                           </TooltipTrigger>
                           <TooltipContent side="top" className="text-xs">
                             Add reaction
+                          </TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6 text-slate-400 hover:text-slate-600"
+                              onClick={() => beginReply(message)}
+                              disabled={Boolean(editingMessage) || isBusy}
+                            >
+                              <CornerUpLeft className="h-4 w-4" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="top" className="text-xs">
+                            Reply
                           </TooltipContent>
                         </Tooltip>
                         {message.direction === "out" && message.text ? (
@@ -2127,7 +2589,36 @@ export function DashboardLayout() {
                             className="text-xs"
                           >
                             <div className="space-y-1">
-                              <p><span className="font-semibold">Status:</span> {message.direction === 'out' && receiptStatus ? receiptStatus : (message.direction === 'in' ? 'received' : 'sending...')}</p>
+                              <p>
+                                <span className="font-semibold">Status:</span>{" "}
+                                {message.direction === "out"
+                                  ? receiptState
+                                    ? receiptState.toLowerCase()
+                                    : "sending..."
+                                  : "received"}
+                              </p>
+                              {message.direction === "out" && deliveredAt ? (
+                                <p>
+                                  <span className="font-semibold">
+                                    Delivered:
+                                  </span>{" "}
+                                  {new Date(deliveredAt).toLocaleString()}
+                                </p>
+                              ) : null}
+                              {message.direction === "out" && processedAt ? (
+                                <p>
+                                  <span className="font-semibold">
+                                    Processed:
+                                  </span>{" "}
+                                  {new Date(processedAt).toLocaleString()}
+                                </p>
+                              ) : null}
+                              {message.direction === "out" && readAt ? (
+                                <p>
+                                  <span className="font-semibold">Read:</span>{" "}
+                                  {new Date(readAt).toLocaleString()}
+                                </p>
+                              ) : null}
                               <p><span className="font-semibold">Signature:</span> {message.verified ? 'Verified' : 'Unverified'}</p>
                               <p><span className="font-semibold">Time:</span> {new Date(message.timestamp).toLocaleString()}</p>
                               <p className="font-mono text-[9px] text-muted-foreground break-all">{message.id}</p>
@@ -2163,6 +2654,24 @@ export function DashboardLayout() {
               </Button>
             </div>
           )}
+          {!editingMessage && replyToMessage ? (
+            <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900 dark:border-emerald-900/30 dark:bg-emerald-900/20 dark:text-emerald-100">
+              <div className="min-w-0">
+                <p className="font-semibold">Replying to {replySenderLabel}</p>
+                <p className="truncate text-[10px] text-emerald-700 dark:text-emerald-300">
+                  {replyPreviewText}
+                </p>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 text-emerald-700 hover:text-emerald-900 dark:text-emerald-200 dark:hover:text-emerald-50"
+                onClick={cancelReply}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          ) : null}
           {attachment && (
             <div className="mb-3 flex items-center justify-between rounded-lg border bg-card p-2 shadow-sm">
               <div className="flex items-center gap-3">

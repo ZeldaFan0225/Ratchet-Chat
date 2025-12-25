@@ -1,10 +1,5 @@
 import Dexie, { type Table } from "dexie"
 
-export type ReceiptStatus =
-  | "DELIVERED_TO_SERVER"
-  | "PROCESSED_BY_CLIENT"
-  | "READ_BY_USER"
-
 export type ContactRecord = {
   id: string
   ownerId: string
@@ -20,8 +15,6 @@ export type MessageRecord = {
   verified: boolean
   createdAt: string
   isRead?: boolean
-  receiptStatus?: ReceiptStatus
-  readReceiptSent?: boolean
   vaultSynced?: boolean
 }
 
@@ -57,9 +50,9 @@ export class RatchetDB extends Dexie {
       })
       .upgrade((tx) =>
         tx
-          .table<MessageRecord, string>("messages")
+          .table("messages")
           .toCollection()
-          .modify((message) => {
+          .modify((message: { readReceiptSent?: boolean }) => {
             if (message.readReceiptSent === undefined) {
               message.readReceiptSent = false
             }
@@ -67,21 +60,37 @@ export class RatchetDB extends Dexie {
       )
     this.version(4).stores({
       messages:
-        "&id, ownerId, senderId, createdAt, isRead, receiptStatus, readReceiptSent",
+        "&id, ownerId, senderId, createdAt, isRead",
       contacts: "&id, ownerId, createdAt",
     })
     this.version(5).stores({
       messages:
-        "&id, ownerId, senderId, createdAt, isRead, receiptStatus, readReceiptSent, vaultSynced",
+        "&id, ownerId, senderId, createdAt, isRead, vaultSynced",
       contacts: "&id, ownerId, createdAt",
     })
     this.version(6).stores({
       messages:
-        "&id, ownerId, senderId, createdAt, isRead, receiptStatus, readReceiptSent, vaultSynced",
+        "&id, ownerId, senderId, createdAt, isRead, vaultSynced",
       contacts: "&id, ownerId, createdAt",
       auth: "&username",
       syncState: "&key",
     })
+    this.version(7)
+      .stores({
+        messages: "&id, ownerId, senderId, createdAt, isRead, vaultSynced",
+        contacts: "&id, ownerId, createdAt",
+        auth: "&username",
+        syncState: "&key",
+      })
+      .upgrade((tx) =>
+        tx
+          .table<MessageRecord, string>("messages")
+          .toCollection()
+          .modify((message) => {
+            delete (message as { receiptStatus?: unknown }).receiptStatus
+            delete (message as { readReceiptSent?: unknown }).readReceiptSent
+          })
+      )
   }
 }
 
