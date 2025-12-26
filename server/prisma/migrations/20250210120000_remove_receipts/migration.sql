@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS "Receipt";
+DROP TYPE IF EXISTS "ReceiptType";

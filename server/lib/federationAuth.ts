@@ -48,7 +48,6 @@ export type FederationDiscoveryDocument = {
   host: string;
   version: number;
   inbox_url: string;
-  receipts_url: string;
   directory_url: string;
   keys: FederationDiscoveryKey[];
   signature: string;
@@ -444,7 +443,6 @@ export const getFederationDiscoveryDocument = (): FederationDiscoveryDocument =>
     host,
     version: 1,
     inbox_url: "/api/federation/incoming",
-    receipts_url: "/api/federation/receipts",
     directory_url: "/directory",
     keys: [
       {
@@ -613,7 +611,7 @@ const isDiscoveryHostValid = (
   if (normalizeHost(doc.host) !== normalizedHost) {
     return false;
   }
-  const urls = [doc.inbox_url, doc.receipts_url, doc.directory_url];
+  const urls = [doc.inbox_url, doc.directory_url];
   for (const url of urls) {
     if (!url) {
       return false;
@@ -644,7 +642,6 @@ const verifyDiscoverySignature = (
     host: doc.host,
     version: doc.version,
     inbox_url: doc.inbox_url,
-    receipts_url: doc.receipts_url,
     directory_url: doc.directory_url,
     keys: doc.keys,
     generated_at: doc.generated_at,
@@ -751,7 +748,6 @@ export const fetchFederationDiscovery = async (
   if (
     !doc.host ||
     !doc.inbox_url ||
-    !doc.receipts_url ||
     !doc.directory_url ||
     !Array.isArray(doc.keys) ||
     !doc.signature ||
@@ -775,7 +771,7 @@ export const fetchFederationDiscovery = async (
 
 export const resolveFederationEndpoint = async (
   targetHost: string,
-  endpoint: "inbox" | "receipts" | "directory"
+  endpoint: "inbox" | "directory"
 ): Promise<string | null> => {
   const doc = await fetchFederationDiscovery(targetHost);
   const protocol = resolveFederationProtocol(targetHost);
@@ -786,9 +782,7 @@ export const resolveFederationEndpoint = async (
   const raw =
     endpoint === "inbox"
       ? doc.inbox_url
-      : endpoint === "receipts"
-        ? doc.receipts_url
-        : doc.directory_url;
+      : doc.directory_url;
   if (raw.startsWith("http")) {
     return raw;
   }

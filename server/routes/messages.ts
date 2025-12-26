@@ -1,5 +1,4 @@
 import type { PrismaClient } from "@prisma/client";
-import { ReceiptType } from "@prisma/client";
 import type { Request, Response } from "express";
 import { Router } from "express";
 import { z } from "zod";
@@ -49,21 +48,9 @@ const storeFromQueueSchema = z.object({
   sender_signature_verified: z.boolean(),
 });
 
-const receiptSchema = z
-  .object({
-    recipient_id: z.string().uuid().optional(),
-    recipient_handle: z.string().min(1).optional(),
-    message_id: z.string().uuid(),
-    type: z.nativeEnum(ReceiptType),
-  })
-  .refine((data) => data.recipient_id || data.recipient_handle, {
-    message: "Missing recipient",
-  });
-
-const federatedReceiptSchema = z.object({
-  recipient_handle: z.string().min(1),
-  message_id: z.string().uuid(),
-  type: z.nativeEnum(ReceiptType),
+const vaultUpdateSchema = z.object({
+  encrypted_blob: z.string().min(1),
+  iv: z.string().min(1),
 });
 
 export const createMessagesRouter = (
@@ -74,7 +61,6 @@ export const createMessagesRouter = (
   const instanceHost = getInstanceHost();
   const serverHost = getServerHost();
   const federationIncomingPath = "/api/federation/incoming";
-  const federationReceiptsPath = "/api/federation/receipts";
   const federationLimiter = createRateLimiter({
     windowMs: Number(process.env.FEDERATION_RATE_LIMIT_WINDOW_MS ?? 60000),
     max: Number(process.env.FEDERATION_RATE_LIMIT_MAX ?? 120),
@@ -181,73 +167,6 @@ export const createMessagesRouter = (
     federationLimiter,
     verifyFederationSignature(),
     handleFederationIncoming
-  );
-
-  const handleFederationReceipts = async (req: Request, res: Response) => {
-    const parsed = federatedReceiptSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid request" });
-    }
-
-    const { recipient_handle, message_id, type } = parsed.data;
-    serverLogger.info("federation.receipts.received", {
-      sender_host: req.headers["x-ratchet-host"],
-      payload: sanitizeLogPayload({ recipient_handle, message_id, type }),
-    });
-    let recipientParsed;
-    try {
-      recipientParsed = parseHandle(recipient_handle, instanceHost);
-    } catch {
-      return res.status(400).json({ error: "Invalid handle" });
-    }
-
-    if (!recipientParsed.isLocal) {
-      return res.status(400).json({ error: "Recipient not local" });
-    }
-
-    const recipient = await prisma.user.findUnique({
-      where: { username: recipientParsed.username },
-      select: { id: true },
-    });
-    if (!recipient) {
-      return res.status(404).json({ error: "Recipient not found" });
-    }
-
-    const receipt = await prisma.receipt.create({
-      data: {
-        recipient_id: recipient.id,
-        message_id,
-        type,
-      },
-    });
-
-    serverLogger.info("federation.receipts.stored", {
-      recipient_id: recipient.id,
-      message_id,
-      type,
-      timestamp: receipt.timestamp,
-    });
-
-    io.to(recipient.id).emit("RECEIPT_UPDATE", {
-      message_id,
-      type,
-      timestamp: receipt.timestamp,
-    });
-
-    return res.status(201).json(receipt);
-  };
-
-  router.post(
-    "/api/federation/receipts",
-    federationLimiter,
-    verifyFederationSignature({ requireSenderHandle: false }),
-    handleFederationReceipts
-  );
-  router.post(
-    "/federation/receipts",
-    federationLimiter,
-    verifyFederationSignature({ requireSenderHandle: false }),
-    handleFederationReceipts
   );
 
   router.use(authenticateToken);
@@ -517,6 +436,38 @@ export const createMessagesRouter = (
     },
   );
 
+  router.post("/messages/queue/:id/ack", async (req: Request, res: Response) => {
+    if (!req.user) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const { id } = req.params;
+    if (!id) {
+      return res.status(400).json({ error: "Invalid request" });
+    }
+
+    const queueItem = await prisma.incomingQueue.findUnique({
+      where: { id },
+    });
+
+    if (!queueItem) {
+      return res.status(404).json({ error: "Not found" });
+    }
+
+    if (queueItem.recipient_id !== req.user.id) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    await prisma.incomingQueue.delete({ where: { id } });
+    serverLogger.info("message.queue.acknowledged", {
+      id,
+      recipient_id: queueItem.recipient_id,
+      sender_handle: queueItem.sender_handle,
+    });
+
+    return res.json({ ok: true });
+  });
+
   router.post("/messages/vault", async (req: Request, res: Response) => {
     if (!req.user) {
       return res.status(401).json({ error: "Unauthorized" });
@@ -574,6 +525,50 @@ export const createMessagesRouter = (
     return res.status(201).json(entry);
   });
 
+  router.patch("/messages/vault/:id", async (req: Request, res: Response) => {
+    if (!req.user) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const parsed = vaultUpdateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid request" });
+    }
+
+    const { id } = req.params;
+    if (!id) {
+      return res.status(400).json({ error: "Invalid request" });
+    }
+
+    const existing = await prisma.messageVault.findUnique({
+      where: { id },
+      select: { id: true, owner_id: true },
+    });
+    if (!existing) {
+      return res.status(404).json({ error: "Not found" });
+    }
+    if (existing.owner_id !== req.user.id) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const updated = await prisma.messageVault.update({
+      where: { id },
+      data: {
+        encrypted_blob: parsed.data.encrypted_blob,
+        iv: parsed.data.iv,
+      },
+    });
+
+    serverLogger.info("message.vault.updated", {
+      id: updated.id,
+      owner_id: updated.owner_id,
+      original_sender_handle: updated.original_sender_handle,
+      updated_at: new Date().toISOString(),
+    });
+
+    return res.json(updated);
+  });
+
   router.get("/messages/vault", async (req: Request, res: Response) => {
     if (!req.user) {
       return res.status(401).json({ error: "Unauthorized" });
@@ -628,150 +623,6 @@ const deleteChatSchema = z.object({
     });
 
     return res.json({ count: deleted.count });
-  });
-
-  router.post("/receipts", async (req: Request, res: Response) => {
-    const parsed = receiptSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid request" });
-    }
-
-    const { recipient_id, recipient_handle, message_id, type } = parsed.data;
-    serverLogger.info("receipt.create.request", {
-      recipient_id,
-      recipient_handle,
-      message_id,
-      type,
-    });
-    let recipientId = recipient_id ?? null;
-    if (!recipientId && recipient_handle) {
-      try {
-        const recipientParsed = parseHandle(recipient_handle, instanceHost);
-        if (!recipientParsed.isLocal) {
-          if (!(await isFederationHostAllowed(recipientParsed.host))) {
-            return res.status(400).json({ error: "Invalid host" });
-          }
-          const payload = {
-            recipient_handle: recipientParsed.handle,
-            message_id,
-            type,
-          };
-          const payloadJson = JSON.stringify(payload);
-          const signature = signFederationPayload(payloadJson);
-          const resolvedUrl =
-            (await resolveFederationEndpoint(recipientParsed.host, "receipts")) ??
-            (() => {
-              const protocol = resolveFederationProtocol(recipientParsed.host);
-              return `${protocol}://${recipientParsed.host}${federationReceiptsPath}`;
-            })();
-          const remoteUrl = resolvedUrl;
-          serverLogger.info("federation.receipts.send", {
-            remote_url: remoteUrl,
-            headers: sanitizeLogPayload({
-              "X-Ratchet-Host": serverHost,
-              "X-Ratchet-Sig": signature,
-            }),
-            payload: sanitizeLogPayload(payload),
-          });
-          try {
-            const response = await federationRequestJson(remoteUrl, {
-              method: "POST",
-              headers: {
-                "X-Ratchet-Host": serverHost,
-                "X-Ratchet-Sig": signature,
-              },
-              body: payloadJson,
-            });
-            serverLogger.info("federation.receipts.response", {
-              remote_url: remoteUrl,
-              ok: response.ok,
-              status: response.status,
-              error: response.error,
-            });
-            if (!response.ok) {
-              const status = response.error ? 503 : 502;
-              return res.status(status).json({
-                error: response.error ?? "Remote host rejected receipt",
-              });
-            }
-          } catch {
-            serverLogger.error("federation.receipts.error", {
-              remote_url: remoteUrl,
-            });
-            return res
-              .status(502)
-              .json({ error: "Unable to reach remote host" });
-          }
-
-          return res.status(202).json({ relayed: true });
-        }
-        const recipient = await prisma.user.findUnique({
-          where: { username: recipientParsed.username },
-          select: { id: true },
-        });
-        recipientId = recipient?.id ?? null;
-      } catch {
-        return res.status(400).json({ error: "Invalid handle" });
-      }
-    }
-    if (!recipientId) {
-      return res.status(404).json({ error: "Recipient not found" });
-    }
-    const recipient = await prisma.user.findUnique({
-      where: { id: recipientId },
-      select: { id: true },
-    });
-    if (!recipient) {
-      return res.status(404).json({ error: "Recipient not found" });
-    }
-
-    const receipt = await prisma.receipt.create({
-      data: {
-        recipient_id: recipientId,
-        message_id,
-        type,
-      },
-    });
-
-    serverLogger.info("receipt.stored", {
-      recipient_id: recipientId,
-      message_id,
-      type,
-      timestamp: receipt.timestamp,
-    });
-
-    io.to(recipientId).emit("RECEIPT_UPDATE", {
-      message_id,
-      type,
-      timestamp: receipt.timestamp,
-    });
-
-    return res.status(201).json(receipt);
-  });
-
-  router.get("/receipts", async (req: Request, res: Response) => {
-    if (!req.user) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-
-    const sinceParam = typeof req.query.since === "string" ? req.query.since : null;
-    let sinceDate: Date | null = null;
-    if (sinceParam) {
-      const parsedDate = new Date(sinceParam);
-      if (!Number.isNaN(parsedDate.valueOf())) {
-        sinceDate = parsedDate;
-      }
-    }
-
-    const receipts = await prisma.receipt.findMany({
-      where: {
-        recipient_id: req.user.id,
-        ...(sinceDate ? { timestamp: { gt: sinceDate } } : {}),
-      },
-      orderBy: { timestamp: "asc" },
-    });
-
-    return res.json(receipts);
   });
 
   return router;

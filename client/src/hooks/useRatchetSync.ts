@@ -3,6 +3,7 @@
 import * as React from "react"
 import { io } from "socket.io-client"
 import { useAuth } from "@/context/AuthContext"
+import { useSettings } from "@/hooks/useSettings"
 import { apiFetch, getAuthToken } from "@/lib/api"
 import {
   buildMessageSignaturePayload,
@@ -102,11 +103,122 @@ type DirectoryEntry = {
 
 type ReceiptEventStatus = "PROCESSED_BY_CLIENT" | "READ_BY_USER"
 
+const isNewerTimestamp = (current: string | undefined, next: string) => {
+  if (!next) {
+    return false
+  }
+  if (!current) {
+    return true
+  }
+  const currentDate = new Date(current)
+  const nextDate = new Date(next)
+  if (Number.isNaN(nextDate.valueOf())) {
+    return false
+  }
+  if (Number.isNaN(currentDate.valueOf())) {
+    return true
+  }
+  return nextDate > currentDate
+}
+
 export function useRatchetSync() {
   const { masterKey, transportPrivateKey, identityPrivateKey, user } = useAuth()
+  const { settings } = useSettings()
   const isSyncingRef = React.useRef(false)
   const directoryCacheRef = React.useRef(new Map<string, DirectoryEntry>())
   const [lastSync, setLastSync] = React.useState(0)
+
+  const updateMessageTimestamps = React.useCallback(
+    async (params: {
+      messageId: string
+      senderHandle?: string
+      processedAt?: string
+      readAt?: string
+    }) => {
+      if (!masterKey) {
+        return false
+      }
+      const record = await db.messages.get(params.messageId)
+      if (!record) {
+        return false
+      }
+      let envelope: { encrypted_blob: string; iv: string } | null = null
+      try {
+        envelope = JSON.parse(record.content) as {
+          encrypted_blob: string
+          iv: string
+        }
+      } catch {
+        return false
+      }
+      if (!envelope?.encrypted_blob || !envelope.iv) {
+        return false
+      }
+      let payload: {
+        direction?: "in" | "out"
+        peerHandle?: string
+        peerId?: string
+        processed_at?: string
+        processedAt?: string
+        read_at?: string
+        readAt?: string
+      } = {}
+      try {
+        const plaintext = await decryptString(masterKey, {
+          ciphertext: envelope.encrypted_blob,
+          iv: envelope.iv,
+        })
+        payload = JSON.parse(plaintext) as typeof payload
+      } catch {
+        return false
+      }
+      if (payload.direction !== "out") {
+        return false
+      }
+      const peerHandle = payload.peerHandle ?? payload.peerId
+      if (params.senderHandle && peerHandle && peerHandle !== params.senderHandle) {
+        return false
+      }
+
+      const currentProcessed = payload.processed_at ?? payload.processedAt
+      const currentRead = payload.read_at ?? payload.readAt
+      const nextPayload: Record<string, unknown> = { ...payload }
+      let didUpdate = false
+
+      if (params.processedAt && isNewerTimestamp(currentProcessed, params.processedAt)) {
+        nextPayload.processed_at = params.processedAt
+        didUpdate = true
+      }
+      if (params.readAt && isNewerTimestamp(currentRead, params.readAt)) {
+        nextPayload.read_at = params.readAt
+        didUpdate = true
+      }
+      if (!didUpdate) {
+        return true
+      }
+
+      const encrypted = await encryptString(masterKey, JSON.stringify(nextPayload))
+      const contentJson = JSON.stringify({
+        encrypted_blob: encrypted.ciphertext,
+        iv: encrypted.iv,
+      })
+      await db.messages.update(params.messageId, { content: contentJson })
+      try {
+        await apiFetch(`/messages/vault/${params.messageId}`, {
+          method: "PATCH",
+          body: {
+            encrypted_blob: encrypted.ciphertext,
+            iv: encrypted.iv,
+          },
+        })
+      } catch {
+        // Best-effort: local state remains authoritative for this device.
+      }
+      setLastSync(Date.now())
+      return true
+    },
+    [masterKey]
+  )
 
   const sendReceiptEvent = React.useCallback(
     async (params: {
@@ -332,6 +444,42 @@ export function useRatchetSync() {
         peerTransportKey = directoryEntry.public_transport_key
       }
 
+      if (payloadType === "receipt") {
+        if (!payloadMessageId || !payloadReceiptStatus || !payloadReceiptTimestamp) {
+          return
+        }
+        if (
+          payloadReceiptStatus === "READ_BY_USER" &&
+          !settings.sendReadReceipts
+        ) {
+          try {
+            await apiFetch(`/messages/queue/${item.id}/ack`, { method: "POST" })
+          } catch {
+            // Best-effort: retry next sync.
+          }
+          return
+        }
+        const updates =
+          payloadReceiptStatus === "PROCESSED_BY_CLIENT"
+            ? { processedAt: payloadReceiptTimestamp }
+            : payloadReceiptStatus === "READ_BY_USER"
+              ? { readAt: payloadReceiptTimestamp }
+              : {}
+        if (Object.keys(updates).length > 0) {
+          await updateMessageTimestamps({
+            messageId: payloadMessageId,
+            senderHandle,
+            ...updates,
+          })
+        }
+        try {
+          await apiFetch(`/messages/queue/${item.id}/ack`, { method: "POST" })
+        } catch {
+          // Best-effort: retry next sync.
+        }
+        return
+      }
+
       const handleParts = senderHandle ? splitHandle(senderHandle) : null
       const vaultPayload = await encryptString(
         masterKey,
@@ -355,10 +503,6 @@ export function useRatchetSync() {
             payloadType === "reaction" ? normalizedReactionAction : undefined,
           reaction_emoji:
             payloadType === "reaction" ? payloadReactionEmoji : undefined,
-          receipt_status:
-            payloadType === "receipt" ? payloadReceiptStatus : undefined,
-          receipt_timestamp:
-            payloadType === "receipt" ? payloadReceiptTimestamp : undefined,
           message_id: payloadMessageId,
           reply_to_message_id:
             payload.reply_to_message_id ?? payload.replyToMessageId,
@@ -423,7 +567,15 @@ export function useRatchetSync() {
       
       setLastSync(Date.now())
     },
-    [masterKey, transportPrivateKey, user?.id, user?.handle, sendReceiptEvent]
+    [
+      masterKey,
+      transportPrivateKey,
+      user?.id,
+      user?.handle,
+      sendReceiptEvent,
+      settings.sendReadReceipts,
+      updateMessageTimestamps,
+    ]
   )
 
   const processQueue = React.useCallback(async () => {

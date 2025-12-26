@@ -11,7 +11,7 @@ The server never receives plaintext messages, raw passwords, or private keys.
 - JWT is required for all endpoints except `POST /auth/register`, `GET /auth/params/:username`,
   `POST /auth/login`, `POST /auth/srp/start`, `POST /auth/srp/verify`,
   `GET /directory/:handle`, `GET /api/directory`, `GET /api/federation/key`,
-  `POST /api/federation/incoming`, and `POST /api/federation/receipts`.
+  `POST /api/federation/incoming`.
 - Send the token using `Authorization: Bearer <jwt>`.
 - JWT subject (`sub`) is the user id.
 
@@ -152,7 +152,6 @@ Response:
   "host": "ratchet.example.com",
   "version": 1,
   "inbox_url": "/api/federation/incoming",
-  "receipts_url": "/api/federation/receipts",
   "directory_url": "/directory",
   "keys": [
     {
@@ -223,8 +222,6 @@ Response:
 }
 ```
 
-Side effect:
-- Creates a Receipt of type `DELIVERED_TO_SERVER` for the sender.
 
 #### POST /api/federation/incoming
 Federation endpoint used by remote hosts to enqueue a message.
@@ -248,33 +245,6 @@ Response:
   "id": "uuid",
   "recipient_handle": "bob@local.host",
   "created_at": "2024-01-01T00:00:00.000Z"
-}
-```
-
-#### POST /api/federation/receipts
-Federation endpoint used by remote hosts to deliver read/processed receipts.
-
-Security:
-- Callback verification is required. Include `X-Ratchet-Host` and `X-Ratchet-Sig`
-  headers and sign the JSON payload with the sender host's Ed25519 private key.
-
-Request body:
-```json
-{
-  "recipient_handle": "alice@local.host",
-  "message_id": "uuid",
-  "type": "READ_BY_USER"
-}
-```
-
-Response:
-```json
-{
-  "id": "uuid",
-  "recipient_id": "uuid",
-  "message_id": "uuid",
-  "type": "READ_BY_USER",
-  "timestamp": "2024-01-01T00:00:00.000Z"
 }
 ```
 
@@ -323,6 +293,17 @@ Response:
 }
 ```
 
+#### POST /messages/queue/:id/ack
+Acknowledges and deletes a queue item without storing it in the MessageVault.
+Used for non-message events (e.g., receipt updates) once verified client-side.
+
+Response:
+```json
+{
+  "ok": true
+}
+```
+
 #### DELETE /messages/queue/:id
 This endpoint is no longer supported. Messages are only removed from the queue
 when stored via `POST /messages/queue/:id/store`.
@@ -354,7 +335,7 @@ Response:
 }
 ```
 
-### Group 4: Storage Flow & Receipts (Auth required)
+### Group 4: Storage Flow (Auth required)
 
 #### GET /messages/vault
 Returns MessageVault items for the authenticated user (newest-first by default).
@@ -378,16 +359,15 @@ Response:
 ]
 ```
 
-#### POST /receipts
-Creates a receipt.
+#### PATCH /messages/vault/:id
+Updates the encrypted payload for an existing MessageVault entry (used to store
+updated delivery/processed/read timestamps).
 
 Request body:
 ```json
 {
-  "recipient_id": "uuid",
-  "recipient_handle": "alice@local.host",
-  "message_id": "uuid",
-  "type": "DELIVERED_TO_SERVER"
+  "encrypted_blob": "opaque-string",
+  "iv": "base64-iv"
 }
 ```
 
@@ -395,30 +375,13 @@ Response:
 ```json
 {
   "id": "uuid",
-  "recipient_id": "uuid",
-  "message_id": "uuid",
-  "type": "DELIVERED_TO_SERVER",
-  "timestamp": "2024-01-01T00:00:00.000Z"
+  "owner_id": "uuid",
+  "original_sender_handle": "alice@remote.host",
+  "encrypted_blob": "opaque-string",
+  "iv": "base64-iv",
+  "sender_signature_verified": true,
+  "created_at": "2024-01-01T00:00:00.000Z"
 }
-```
-
-#### GET /receipts
-Returns receipts for the authenticated user.
-
-Query params:
-- `since`: ISO timestamp; returns receipts after this time.
-
-Response:
-```json
-[
-  {
-    "id": "uuid",
-    "recipient_id": "uuid",
-    "message_id": "uuid",
-    "type": "DELIVERED_TO_SERVER",
-    "timestamp": "2024-01-01T00:00:00.000Z"
-  }
-]
 ```
 
 ## What the server expects from the client
@@ -441,7 +404,7 @@ Bridge flow (client-driven only):
 - Upload to `/messages/queue/:id/store` with the new ciphertext and `iv`.
 
 Receipts:
-- Create receipts when appropriate (`PROCESSED_BY_CLIENT`, `READ_BY_USER`).
-- If `recipient_handle` is remote, the server forwards to the recipient's host
-  via `POST /federation/receipts`.
-- Treat receipt delivery as metadata only; the server does not verify cryptographic claims.
+- Send signed receipt events (`PROCESSED_BY_CLIENT`, `READ_BY_USER`) as encrypted
+  transit messages via `/messages/send`.
+- Store receipt timestamps with the original message payload (client-side
+  encryption) and update the MessageVault via `PATCH /messages/vault/:id`.

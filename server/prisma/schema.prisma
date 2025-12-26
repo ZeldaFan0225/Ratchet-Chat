@@ -7,12 +7,6 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum ReceiptType {
-  DELIVERED_TO_SERVER
-  PROCESSED_BY_CLIENT
-  READ_BY_USER
-}
-
 model User {
   id                         String          @id @default(uuid()) @db.Uuid
   username                   String          @unique
@@ -31,7 +25,6 @@ model User {
   created_at                 DateTime        @default(now())
   incoming_queue             IncomingQueue[] @relation("IncomingRecipient")
   vault_messages             MessageVault[]  @relation("VaultOwner")
-  receipts                   Receipt[]       @relation("ReceiptRecipient")
 }
 
 model IncomingQueue {
@@ -54,13 +47,4 @@ model MessageVault {
   sender_signature_verified Boolean  @default(false)
   created_at                DateTime @default(now())
   owner                     User     @relation("VaultOwner", fields: [owner_id], references: [id], onDelete: Cascade)
-}
-
-model Receipt {
-  id           String      @id @default(uuid()) @db.Uuid
-  recipient_id String      @db.Uuid
-  message_id   String      @db.Uuid
-  type         ReceiptType
-  timestamp    DateTime    @default(now())
-  recipient    User        @relation("ReceiptRecipient", fields: [recipient_id], references: [id], onDelete: Cascade)
 }

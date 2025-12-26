@@ -103,15 +103,13 @@ type StoredMessage = {
   text: string
   attachments?: Attachment[]
   timestamp: string
-  kind?: "message" | "edit" | "delete" | "reaction" | "receipt"
+  kind?: "message" | "edit" | "delete" | "reaction"
   editedAt?: string
   deletedAt?: string
   reactionAction?: "add" | "remove"
   deliveredAt?: string
   processedAt?: string
   readAt?: string
-  receiptStatus?: "PROCESSED_BY_CLIENT" | "READ_BY_USER"
-  receiptTimestamp?: string
   replyTo?: {
     messageId: string
   }
@@ -227,10 +225,6 @@ async function decodeMessageRecord(
       processedAt?: string
       read_at?: string
       readAt?: string
-      receipt_status?: "PROCESSED_BY_CLIENT" | "READ_BY_USER"
-      receiptStatus?: "PROCESSED_BY_CLIENT" | "READ_BY_USER"
-      receipt_timestamp?: string
-      receiptTimestamp?: string
       reply_to_message_id?: string
       replyToMessageId?: string
       reply_to_text?: string
@@ -245,6 +239,9 @@ async function decodeMessageRecord(
     } catch {
       payload = { text: plaintext }
     }
+    if (payload.type === "receipt") {
+      return null
+    }
     const isReaction = payload.type === "reaction"
     const reactionEmoji =
       payload.reaction_emoji ?? payload.reactionEmoji ?? payload.emoji
@@ -258,8 +255,6 @@ async function decodeMessageRecord(
         ? "delete"
         : payload.type === "reaction"
         ? "reaction"
-        : payload.type === "receipt"
-        ? "receipt"
         : "message"
     const direction = payload.direction ?? "in"
     const isRead = record.isRead ?? direction === "out"
@@ -296,8 +291,6 @@ async function decodeMessageRecord(
       deliveredAt: payload.delivered_at ?? payload.deliveredAt,
       processedAt: payload.processed_at ?? payload.processedAt,
       readAt: payload.read_at ?? payload.readAt,
-      receiptStatus: payload.receipt_status ?? payload.receiptStatus,
-      receiptTimestamp: payload.receipt_timestamp ?? payload.receiptTimestamp,
       replyTo: replyMessageId
         ? {
             messageId: replyMessageId,
@@ -316,7 +309,6 @@ function getEventTimestamp(message: StoredMessage) {
   const value =
     message.editedAt ??
     message.deletedAt ??
-    message.receiptTimestamp ??
     message.timestamp
   const parsed = new Date(value)
   return Number.isNaN(parsed.valueOf()) ? 0 : parsed.valueOf()
@@ -332,13 +324,6 @@ function applyMessageEvents(messages: StoredMessage[]) {
   const reactions = messages.filter(
     (message) =>
       message.kind === "reaction" && message.messageId && message.text
-  )
-  const receipts = messages.filter(
-    (message) =>
-      message.kind === "receipt" &&
-      message.messageId &&
-      message.receiptStatus &&
-      message.receiptTimestamp
   )
   const latestEdits = new Map<string, StoredMessage>()
   for (const edit of edits) {
@@ -379,36 +364,12 @@ function applyMessageEvents(messages: StoredMessage[]) {
     bucket.set(reaction.text, state)
     reactionsByMessage.set(key, bucket)
   }
-  const latestProcessed = new Map<string, StoredMessage>()
-  const latestRead = new Map<string, StoredMessage>()
-  for (const receipt of receipts) {
-    if (!receipt.messageId) continue
-    if (receipt.receiptStatus === "PROCESSED_BY_CLIENT") {
-      const existing = latestProcessed.get(receipt.messageId)
-      if (
-        !existing ||
-        getEventTimestamp(receipt) > getEventTimestamp(existing)
-      ) {
-        latestProcessed.set(receipt.messageId, receipt)
-      }
-    }
-    if (receipt.receiptStatus === "READ_BY_USER") {
-      const existing = latestRead.get(receipt.messageId)
-      if (
-        !existing ||
-        getEventTimestamp(receipt) > getEventTimestamp(existing)
-      ) {
-        latestRead.set(receipt.messageId, receipt)
-      }
-    }
-  }
   const next: StoredMessage[] = []
   for (const message of messages) {
     if (
       message.kind === "edit" ||
       message.kind === "delete" ||
-      message.kind === "reaction" ||
-      message.kind === "receipt"
+      message.kind === "reaction"
     ) {
       continue
     }
@@ -436,22 +397,6 @@ function applyMessageEvents(messages: StoredMessage[]) {
       continue
     }
     const edit = targetId ? latestEdits.get(targetId) : null
-    const processedReceipt = targetId ? latestProcessed.get(targetId) : null
-    const readReceipt = targetId ? latestRead.get(targetId) : null
-    const processedAt =
-      processedReceipt &&
-      processedReceipt.verified &&
-      processedReceipt.peerHandle === message.peerHandle &&
-      processedReceipt.direction !== message.direction
-        ? processedReceipt.receiptTimestamp
-        : message.processedAt
-    const readAt =
-      readReceipt &&
-      readReceipt.verified &&
-      readReceipt.peerHandle === message.peerHandle &&
-      readReceipt.direction !== message.direction
-        ? readReceipt.receiptTimestamp
-        : message.readAt
     if (
       edit &&
       edit.verified &&
@@ -464,15 +409,13 @@ function applyMessageEvents(messages: StoredMessage[]) {
         editedAt: edit.editedAt ?? edit.timestamp,
         attachments: message.attachments,
         reactions: reactionList,
-        processedAt,
-        readAt,
       })
       continue
     }
     if (reactionList && reactionList.length > 0) {
-      next.push({ ...message, reactions: reactionList, processedAt, readAt })
+      next.push({ ...message, reactions: reactionList })
     } else {
-      next.push({ ...message, processedAt, readAt })
+      next.push({ ...message })
     }
   }
   return next
@@ -649,6 +592,17 @@ export function DashboardLayout() {
         iv: encrypted.iv,
       })
       await db.messages.update(messageId, { content: contentJson })
+      try {
+        await apiFetch(`/messages/vault/${messageId}`, {
+          method: "PATCH",
+          body: {
+            encrypted_blob: encrypted.ciphertext,
+            iv: encrypted.iv,
+          },
+        })
+      } catch {
+        // Best-effort: local updates remain in place if sync fails.
+      }
       const decoded = await decodeMessageRecord(
         { ...record, content: contentJson },
         masterKey,
