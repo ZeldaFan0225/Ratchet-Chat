@@ -38,11 +38,35 @@ type QueueItem = {
 type VaultItem = {
   id: string
   owner_id: string
+  peer_handle?: string | null
   original_sender_handle: string
   encrypted_blob: string
   iv: string
   sender_signature_verified: boolean
+  version: number
   created_at: string
+  updated_at: string
+  deleted_at?: string | null
+}
+
+type ConversationSummary = {
+  id: string
+  peer_handle: string | null
+  original_sender_handle: string
+  encrypted_blob: string
+  iv: string
+  sender_signature_verified: boolean
+  version: number
+  created_at: string
+  updated_at: string
+}
+
+export type DecryptedSummary = {
+  peerHandle: string
+  lastMessageText: string
+  lastMessageTimestamp: string
+  direction: "in" | "out"
+  isRead: boolean
 }
 
 type TransitPayload = {
@@ -128,6 +152,8 @@ export function useRatchetSync() {
   const directoryCacheRef = React.useRef(new Map<string, DirectoryEntry>())
   const processedIdsRef = React.useRef(new Set<string>())
   const [lastSync, setLastSync] = React.useState(0)
+  const [summaries, setSummaries] = React.useState<Map<string, DecryptedSummary>>(new Map())
+  const [summariesLoaded, setSummariesLoaded] = React.useState(false)
 
   const updateMessageTimestamps = React.useCallback(
     async (params: {
@@ -261,6 +287,7 @@ export function useRatchetSync() {
           recipient_handle: params.recipientHandle,
           encrypted_blob: encryptedBlob,
           message_id: crypto.randomUUID(),
+          event_type: "receipt",
         },
       })
     },
@@ -540,6 +567,7 @@ export function useRatchetSync() {
           stored.owner_id ??
           item.recipient_id,
         senderId: stored.original_sender_handle ?? item.sender_handle,
+        peerHandle: senderHandle ?? item.sender_handle,  // Incoming: peer is sender
         content: contentJson,
         verified: stored.sender_signature_verified ?? authenticityVerified,
         isRead: false,
@@ -624,21 +652,34 @@ export function useRatchetSync() {
         }>(`/messages/vault/sync?${params.toString()}`)
 
         if (response.items.length > 0) {
-          // Filter out items that already exist locally
-          const existingIds = new Set(
-            (await db.messages
-              .where("id")
-              .anyOf(response.items.map((item) => item.id))
-              .primaryKeys()) as string[]
-          )
-          const newItems = response.items.filter((item) => !existingIds.has(item.id))
+          // Check which items already exist locally
+          const existingRecords = await db.messages
+            .where("id")
+            .anyOf(response.items.map((item) => item.id))
+            .toArray()
+          const existingMap = new Map(existingRecords.map((r) => [r.id, r]))
 
-          if (newItems.length > 0) {
+          // Separate new items from updates
+          const newItems: VaultItem[] = []
+          const updatedItems: VaultItem[] = []
+
+          for (const item of response.items) {
+            if (existingMap.has(item.id)) {
+              updatedItems.push(item)
+            } else {
+              newItems.push(item)
+            }
+          }
+
+          // Insert new items (excluding soft-deleted ones)
+          const activeNewItems = newItems.filter((item) => !item.deleted_at)
+          if (activeNewItems.length > 0) {
             await db.messages.bulkPut(
-              newItems.map((item) => ({
+              activeNewItems.map((item) => ({
                 id: item.id,
                 ownerId: item.owner_id || ownerId,
-                senderId: item.original_sender_handle,
+                senderId: item.peer_handle ?? item.original_sender_handle,
+                peerHandle: item.peer_handle ?? item.original_sender_handle,
                 content: JSON.stringify({
                   encrypted_blob: item.encrypted_blob,
                   iv: item.iv,
@@ -649,7 +690,25 @@ export function useRatchetSync() {
                 createdAt: item.created_at,
               }))
             )
-            totalFetched += newItems.length
+            totalFetched += activeNewItems.length
+          }
+
+          // Handle updates - update content or delete if soft-deleted
+          for (const item of updatedItems) {
+            if (item.deleted_at) {
+              // Soft delete: remove from local DB
+              await db.messages.delete(item.id)
+            } else {
+              // Update content (edits, reactions, etc.)
+              await db.messages.update(item.id, {
+                content: JSON.stringify({
+                  encrypted_blob: item.encrypted_blob,
+                  iv: item.iv,
+                }),
+                senderId: item.peer_handle ?? item.original_sender_handle,
+                peerHandle: item.peer_handle ?? item.original_sender_handle,
+              })
+            }
           }
         }
 
@@ -726,31 +785,173 @@ export function useRatchetSync() {
     }
   }, [masterKey, user?.handle, user?.id])
 
+  const fetchSummaries = React.useCallback(async () => {
+    if (!masterKey) {
+      return
+    }
+    try {
+      const rawSummaries = await apiFetch<ConversationSummary[]>("/messages/vault/summaries")
+      const decryptedMap = new Map<string, DecryptedSummary>()
+
+      for (const summary of rawSummaries) {
+        const peerHandle = summary.peer_handle ?? summary.original_sender_handle
+        if (!peerHandle) continue
+
+        try {
+          const plaintext = await decryptString(masterKey, {
+            ciphertext: summary.encrypted_blob,
+            iv: summary.iv,
+          })
+          const payload = JSON.parse(plaintext) as {
+            text?: string
+            content?: string
+            direction?: "in" | "out"
+            timestamp?: string
+            isRead?: boolean
+          }
+
+          decryptedMap.set(peerHandle, {
+            peerHandle,
+            lastMessageText: payload.text ?? payload.content ?? "",
+            lastMessageTimestamp: payload.timestamp ?? summary.created_at,
+            direction: payload.direction ?? "in",
+            isRead: payload.isRead ?? false,
+          })
+        } catch {
+          // Skip messages that fail to decrypt
+        }
+      }
+
+      setSummaries(decryptedMap)
+      setSummariesLoaded(true)
+    } catch {
+      // Best-effort: summaries are optional for fast load
+    }
+  }, [masterKey])
+
+  // Migration: backfill peerHandle for existing messages that don't have it
+  const migratePeerHandle = React.useCallback(async () => {
+    if (!masterKey || !user) {
+      return
+    }
+    const ownerId = user.id ?? user.handle
+    if (!ownerId) return
+
+    // Check if migration was already done
+    const migrationKey = "peerHandleMigrationDone"
+    const migrationRecord = await db.syncState.get(migrationKey)
+    if (migrationRecord?.value === true) {
+      return
+    }
+
+    // Get all messages for this owner that might need peerHandle backfill
+    const allRecords = await db.messages
+      .where("ownerId")
+      .equals(ownerId)
+      .toArray()
+
+    // Filter records that don't have peerHandle
+    const needsMigration = allRecords.filter((r) => !r.peerHandle)
+    if (needsMigration.length === 0) {
+      // Mark migration as complete
+      await db.syncState.put({ key: migrationKey, value: true })
+      return
+    }
+
+    // Process in batches of 50 to avoid blocking UI
+    const batchSize = 50
+    for (let i = 0; i < needsMigration.length; i += batchSize) {
+      const batch = needsMigration.slice(i, i + batchSize)
+      const updates: Array<{ id: string; peerHandle: string }> = []
+
+      for (const record of batch) {
+        try {
+          const envelope = JSON.parse(record.content) as {
+            encrypted_blob: string
+            iv: string
+          }
+          if (!envelope?.encrypted_blob || !envelope.iv) continue
+
+          const plaintext = await decryptString(masterKey, {
+            ciphertext: envelope.encrypted_blob,
+            iv: envelope.iv,
+          })
+          const payload = JSON.parse(plaintext) as {
+            peerHandle?: string
+            peerId?: string
+            direction?: "in" | "out"
+          }
+
+          // Extract peerHandle from payload
+          const peerHandle = payload.peerHandle ?? payload.peerId
+          if (peerHandle) {
+            updates.push({ id: record.id, peerHandle })
+          } else if (payload.direction === "in" && record.senderId) {
+            // For incoming messages, peer is the sender
+            updates.push({ id: record.id, peerHandle: record.senderId })
+          }
+        } catch {
+          // Skip records that fail to decrypt
+        }
+      }
+
+      // Bulk update records with peerHandle
+      for (const update of updates) {
+        await db.messages.update(update.id, { peerHandle: update.peerHandle })
+      }
+
+      // Yield to UI between batches
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+
+    // Mark migration as complete
+    await db.syncState.put({ key: migrationKey, value: true })
+  }, [masterKey, user])
+
   const runSync = React.useCallback(async () => {
     if (!masterKey || !transportPrivateKey) {
       return
     }
+
+    // Phase 1: Fast - get to usable UI quickly
     try {
       await processQueue()
     } catch {
-      // Continue to vault sync even if queue fetch fails.
+      // Continue even if queue fetch fails
     }
     try {
-      await syncVault()
+      await fetchSummaries()
     } catch {
-      // Best-effort.
+      // Summaries are optional for fast load
     }
-    try {
-      await syncOutgoingVault()
-    } catch {
-      // Best-effort.
-    }
+
+    // Phase 2: Background - full sync (non-blocking)
+    // Use setTimeout to allow UI to render before heavy sync
+    setTimeout(async () => {
+      try {
+        await syncVault()
+      } catch {
+        // Best-effort
+      }
+      try {
+        await syncOutgoingVault()
+      } catch {
+        // Best-effort
+      }
+      try {
+        await migratePeerHandle()
+      } catch {
+        // Best-effort migration
+      }
+    }, 100)
   }, [
     masterKey,
     transportPrivateKey,
     processQueue,
+    fetchSummaries,
     syncVault,
     syncOutgoingVault,
+    migratePeerHandle,
   ])
 
   React.useEffect(() => {
@@ -852,6 +1053,7 @@ export function useRatchetSync() {
         id: payload.message_id,
         ownerId,
         senderId: ownerId, // It's our own message
+        peerHandle: payload.original_sender_handle, // Outgoing: peer is recipient
         content: JSON.stringify({
           encrypted_blob: payload.encrypted_blob,
           iv: payload.iv,
@@ -899,6 +1101,7 @@ export function useRatchetSync() {
         id: payload.id,
         ownerId,
         senderId: payload.original_sender_handle,
+        peerHandle: payload.original_sender_handle, // Incoming: peer is sender
         content: JSON.stringify({
           encrypted_blob: payload.encrypted_blob,
           iv: payload.iv,
@@ -912,15 +1115,44 @@ export function useRatchetSync() {
     }
     socket.on("INCOMING_MESSAGE_SYNCED", incomingSyncedHandler)
 
+    // Handle vault message updates from other devices (edits, reactions, deletes)
+    const vaultUpdateHandler = async (payload: {
+      id: string
+      encrypted_blob: string
+      iv: string
+      version: number
+      deleted_at: string | null
+      updated_at: string
+    }) => {
+      if (!payload?.id) {
+        return
+      }
+      if (payload.deleted_at) {
+        // Soft delete: remove from local DB
+        await db.messages.delete(payload.id)
+      } else {
+        // Update content
+        await db.messages.update(payload.id, {
+          content: JSON.stringify({
+            encrypted_blob: payload.encrypted_blob,
+            iv: payload.iv,
+          }),
+        })
+      }
+      setLastSync(Date.now())
+    }
+    socket.on("VAULT_MESSAGE_UPDATED", vaultUpdateHandler)
+
     return () => {
       socket.off("connect")
       socket.off("connect_error")
       socket.off("INCOMING_MESSAGE", handler)
       socket.off("OUTGOING_MESSAGE_SYNCED", outgoingHandler)
       socket.off("INCOMING_MESSAGE_SYNCED", incomingSyncedHandler)
+      socket.off("VAULT_MESSAGE_UPDATED", vaultUpdateHandler)
       socket.disconnect()
     }
   }, [masterKey, transportPrivateKey, runSync, user?.handle, user?.id, processSingleQueueItem])
 
-  return { processQueue, syncVault, runSync, lastSync }
+  return { processQueue, syncVault, runSync, lastSync, summaries, summariesLoaded, fetchSummaries }
 }

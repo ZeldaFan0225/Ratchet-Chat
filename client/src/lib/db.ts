@@ -11,6 +11,7 @@ export type MessageRecord = {
   id: string
   ownerId: string
   senderId: string
+  peerHandle?: string  // Conversation partner's handle for efficient queries
   content: string
   verified: boolean
   createdAt: string
@@ -94,6 +95,13 @@ export class RatchetDB extends Dexie {
     // Add compound index for efficient conversation queries
     this.version(8).stores({
       messages: "&id, ownerId, senderId, createdAt, isRead, vaultSynced, [ownerId+senderId]",
+      contacts: "&id, ownerId, createdAt",
+      auth: "&username",
+      syncState: "&key",
+    })
+    // Add peerHandle for per-conversation lazy loading
+    this.version(9).stores({
+      messages: "&id, ownerId, senderId, peerHandle, createdAt, isRead, vaultSynced, [ownerId+peerHandle]",
       contacts: "&id, ownerId, createdAt",
       auth: "&username",
       syncState: "&key",

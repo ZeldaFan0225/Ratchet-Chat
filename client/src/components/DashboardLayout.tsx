@@ -54,10 +54,13 @@ export function DashboardLayout() {
   const { theme } = useTheme()
   const socket = useSocket()
   const { settings } = useSettings()
-  const { lastSync, runSync } = useRatchetSync()
+  const { lastSync, runSync, summaries, summariesLoaded } = useRatchetSync()
   const [contacts, setContacts] = React.useState<Contact[]>([])
   const [activeId, setActiveId] = React.useState<string>("")
   const [messages, setMessages] = React.useState<StoredMessage[]>([])
+  const [conversationMessages, setConversationMessages] = React.useState<Map<string, StoredMessage[]>>(new Map())
+  const [loadedConversations, setLoadedConversations] = React.useState<Set<string>>(new Set())
+  const [loadingConversation, setLoadingConversation] = React.useState<string | null>(null)
   const [composeText, setComposeText] = React.useState("")
   const [editingMessage, setEditingMessage] = React.useState<StoredMessage | null>(null)
   const [replyToMessage, setReplyToMessage] = React.useState<StoredMessage | null>(null)
@@ -252,6 +255,7 @@ export function DashboardLayout() {
           recipient_handle: message.peerHandle,
           encrypted_blob: encryptedBlob,
           message_id: crypto.randomUUID(),
+          event_type: "receipt",
         },
       })
       return true
@@ -390,22 +394,44 @@ export function DashboardLayout() {
 
   const conversations = React.useMemo<ConversationPreview[]>(() => {
     const query = sidebarSearchQuery.toLowerCase().trim()
-    
+
     const truncate = (text: string, limit = 20) => {
       if (text.length <= limit) return text
       return text.substring(0, limit) + "..."
     }
 
     if (!query) {
+      // Use summaries for fast sidebar when available (no search query)
       const list = contacts.map((contact) => {
-        const thread = messagesByPeer.get(contact.handle) ?? []
-        const lastMessage = thread[thread.length - 1]
+        const summary = summaries.get(contact.handle)
         const isActive = contact.handle === activeId
+
+        // For unread count, check local messages if available
+        const thread = messagesByPeer.get(contact.handle) ?? []
         const unread = isActive
           ? 0
           : thread.filter((m) => m.direction === "in" && !m.isRead).length
-        
-        const rawText = lastMessage?.text || (lastMessage?.attachments?.length ? "📎 Attachment" : "No messages yet")
+
+        // Get last message from local thread
+        const lastMessage = thread[thread.length - 1]
+        const localTimestamp = lastMessage?.timestamp || ""
+        const summaryTimestamp = summary?.lastMessageTimestamp || ""
+
+        // Use whichever is more recent (local message or summary)
+        const useLocal = localTimestamp && (!summaryTimestamp || localTimestamp > summaryTimestamp)
+
+        let rawText: string
+        let lastTimestampRaw: string
+        if (useLocal && lastMessage) {
+          rawText = lastMessage.text || (lastMessage.attachments?.length ? "Attachment" : "No messages yet")
+          lastTimestampRaw = localTimestamp
+        } else if (summary) {
+          rawText = summary.lastMessageText || "No messages yet"
+          lastTimestampRaw = summaryTimestamp
+        } else {
+          rawText = "No messages yet"
+          lastTimestampRaw = contact.createdAt || ""
+        }
 
         return {
           id: contact.handle,
@@ -413,16 +439,22 @@ export function DashboardLayout() {
           name: contact.username,
           handle: contact.handle,
           lastMessage: truncate(rawText),
-          lastTimestamp: formatTimestamp(lastMessage?.timestamp ?? ""),
-          lastTimestampRaw: lastMessage?.timestamp || contact.createdAt || "",
+          lastTimestamp: formatTimestamp(lastTimestampRaw),
+          lastTimestampRaw,
           unread,
           status: "offline" as const,
         }
       })
 
-      // Sort by last activity (message timestamp or contact creation date)
+      // Sort: unread chats first (by activity), then read chats (by activity)
       return list
-        .sort((a, b) => b.lastTimestampRaw.localeCompare(a.lastTimestampRaw))
+        .sort((a, b) => {
+          // Unread chats come first
+          if (a.unread > 0 && b.unread === 0) return -1
+          if (a.unread === 0 && b.unread > 0) return 1
+          // Within same group, sort by last activity (most recent first)
+          return b.lastTimestampRaw.localeCompare(a.lastTimestampRaw)
+        })
         .map(({ lastTimestampRaw, ...conv }) => conv)
     }
 
@@ -480,7 +512,7 @@ export function DashboardLayout() {
     }
 
     return results
-  }, [contacts, messagesByPeer, activeId, sidebarSearchQuery])
+  }, [contacts, messagesByPeer, activeId, sidebarSearchQuery, summaries])
 
 
   const handleTyping = React.useCallback(async () => {
@@ -559,18 +591,19 @@ export function DashboardLayout() {
       )
       const nextContacts = decoded.filter(Boolean) as Contact[]
       setContacts(nextContacts)
-      if (nextContacts.length > 0) {
-        setActiveId((current) => current || nextContacts[0].handle)
-      }
+      // Don't auto-select here - let the conversations effect handle it
+      // so we always select the most recent conversation
     }
     void load()
   }, [user?.handle, user?.id, masterKey])
 
+  // Always select the topmost (most recent) conversation on login/refresh
   React.useEffect(() => {
-    if (!activeId && contacts.length > 0) {
-      setActiveId(contacts[0].handle)
+    if (!activeId && conversations.length > 0) {
+      // conversations is already sorted by last activity (most recent first)
+      setActiveId(conversations[0].id)
     }
-  }, [activeId, contacts])
+  }, [activeId, conversations])
 
   React.useEffect(() => {
     if (!editingMessage) {
@@ -702,6 +735,45 @@ export function DashboardLayout() {
     }
     void loadMessages()
   }, [masterKey, lastSync, user])
+
+  // Load messages for a specific conversation (lazy loading)
+  const loadConversationMessages = React.useCallback(async (peerHandle: string) => {
+    if (loadedConversations.has(peerHandle) || !masterKey || !user) {
+      return
+    }
+
+    setLoadingConversation(peerHandle)
+
+    try {
+      const ownerId = user.id ?? user.handle
+      // Query IndexedDB by peerHandle (efficient with the new index)
+      const records = await db.messages
+        .where("[ownerId+peerHandle]")
+        .equals([ownerId, peerHandle])
+        .toArray()
+
+      // Decrypt messages for this conversation
+      const decoded = await Promise.all(
+        records.map((record) =>
+          decodeMessageRecord(record, masterKey, record.senderId)
+        )
+      )
+
+      const conversationMsgs = decoded.filter(Boolean) as StoredMessage[]
+
+      setConversationMessages((prev) => new Map(prev).set(peerHandle, conversationMsgs))
+      setLoadedConversations((prev) => new Set(prev).add(peerHandle))
+    } finally {
+      setLoadingConversation(null)
+    }
+  }, [masterKey, user, loadedConversations])
+
+  // Trigger conversation load when active contact changes
+  React.useEffect(() => {
+    if (activeContact?.handle && !loadedConversations.has(activeContact.handle)) {
+      void loadConversationMessages(activeContact.handle)
+    }
+  }, [activeContact?.handle, loadedConversations, loadConversationMessages])
 
   React.useEffect(() => {
     if (!masterKey || !user || visibleMessages.length === 0) {
@@ -1137,6 +1209,7 @@ export function DashboardLayout() {
         id: messageId,
         ownerId: user?.id ?? user?.handle ?? "me",
         senderId: user?.handle ?? "me",
+        peerHandle: activeContact.handle, // Outgoing: peer is recipient
         content: JSON.stringify({
           encrypted_blob: encryptedLocal.ciphertext,
           iv: encryptedLocal.iv,
@@ -1163,6 +1236,7 @@ export function DashboardLayout() {
           recipient_handle: activeContact.handle,
           encrypted_blob: encryptedBlob,
           message_id: messageId,
+          event_type: "message",
           sender_vault_blob: encryptedLocal.ciphertext,
           sender_vault_iv: encryptedLocal.iv,
           sender_vault_signature_verified: true,
@@ -1274,6 +1348,7 @@ export function DashboardLayout() {
         id: editEventId,
         ownerId: user?.id ?? user?.handle ?? "me",
         senderId: user?.handle ?? "me",
+        peerHandle: activeContact.handle, // Outgoing: peer is recipient
         content: JSON.stringify({
           encrypted_blob: encryptedLocal.ciphertext,
           iv: encryptedLocal.iv,
@@ -1299,7 +1374,8 @@ export function DashboardLayout() {
         body: {
           recipient_handle: activeContact.handle,
           encrypted_blob: encryptedBlob,
-          message_id: editEventId,
+          message_id: targetMessageId,
+          event_type: "edit",
           sender_vault_blob: encryptedLocal.ciphertext,
           sender_vault_iv: encryptedLocal.iv,
           sender_vault_signature_verified: true,
@@ -1417,15 +1493,16 @@ export function DashboardLayout() {
           id: deleteEventId,
           ownerId: user?.id ?? user?.handle ?? "me",
           senderId: user?.handle ?? "me",
-        content: JSON.stringify({
-          encrypted_blob: encryptedLocal.ciphertext,
-          iv: encryptedLocal.iv,
-        }),
-        verified: true,
-        isRead: true,
-        vaultSynced: false,
-        createdAt: deletedAt,
-      }
+          peerHandle: activeContact.handle, // Outgoing: peer is recipient
+          content: JSON.stringify({
+            encrypted_blob: encryptedLocal.ciphertext,
+            iv: encryptedLocal.iv,
+          }),
+          verified: true,
+          isRead: true,
+          vaultSynced: false,
+          createdAt: deletedAt,
+        }
         await db.messages.put(localRecord)
         const decoded = await decodeMessageRecord(
           localRecord,
@@ -1442,7 +1519,8 @@ export function DashboardLayout() {
           body: {
             recipient_handle: activeContact.handle,
             encrypted_blob: encryptedBlob,
-            message_id: deleteEventId,
+            message_id: targetMessageId,
+            event_type: "delete",
             sender_vault_blob: encryptedLocal.ciphertext,
             sender_vault_iv: encryptedLocal.iv,
             sender_vault_signature_verified: true,
@@ -1557,15 +1635,16 @@ export function DashboardLayout() {
           id: reactionEventId,
           ownerId: user?.id ?? user?.handle ?? "me",
           senderId: user?.handle ?? "me",
-        content: JSON.stringify({
-          encrypted_blob: encryptedLocal.ciphertext,
-          iv: encryptedLocal.iv,
-        }),
-        verified: true,
-        isRead: true,
-        vaultSynced: false,
-        createdAt: reactedAt,
-      }
+          peerHandle: activeContact.handle, // Outgoing: peer is recipient
+          content: JSON.stringify({
+            encrypted_blob: encryptedLocal.ciphertext,
+            iv: encryptedLocal.iv,
+          }),
+          verified: true,
+          isRead: true,
+          vaultSynced: false,
+          createdAt: reactedAt,
+        }
         await db.messages.put(localRecord)
         const decoded = await decodeMessageRecord(
           localRecord,
@@ -1582,7 +1661,9 @@ export function DashboardLayout() {
           body: {
             recipient_handle: activeContact.handle,
             encrypted_blob: encryptedBlob,
-            message_id: reactionEventId,
+            message_id: targetMessageId,
+            event_type: "reaction",
+            reaction_emoji: emoji,
             sender_vault_blob: encryptedLocal.ciphertext,
             sender_vault_iv: encryptedLocal.iv,
             sender_vault_signature_verified: true,
@@ -1726,6 +1807,14 @@ export function DashboardLayout() {
               ) : (
                 <div className="mx-auto rounded-full bg-card/80 px-4 py-2 text-xs text-muted-foreground shadow-sm">
                   Messages are sealed locally. The server only stores ciphertext.
+                </div>
+              )}
+              {loadingConversation === activeContact?.handle && (
+                <div className="flex justify-center py-4">
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                    <span className="text-sm">Loading messages...</span>
+                  </div>
                 </div>
               )}
               {activeMessages.map((message) => {

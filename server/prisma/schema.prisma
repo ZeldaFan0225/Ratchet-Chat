@@ -49,23 +49,34 @@ model IncomingQueue {
   id             String   @id @default(uuid()) @db.Uuid
   recipient_id   String   @db.Uuid
   sender_handle  String?
+  message_id     String?  @db.Uuid
+  event_type     String   @default("message")
+  reaction_emoji String?
   encrypted_blob String   @db.Text
+  iv             String?
   created_at     DateTime @default(now())
   recipient      User     @relation("IncomingRecipient", fields: [recipient_id], references: [id], onDelete: Cascade)
 
   @@index([recipient_id])
+  @@index([recipient_id, message_id, event_type, sender_handle])
 }
 
 model MessageVault {
-  id                        String   @id @default(uuid()) @db.Uuid
-  owner_id                  String   @db.Uuid
+  id                        String    @id @default(uuid()) @db.Uuid
+  owner_id                  String    @db.Uuid
+  peer_handle               String?
   original_sender_handle    String
-  encrypted_blob            String   @db.Text
+  encrypted_blob            String    @db.Text
   iv                        String
-  sender_signature_verified Boolean  @default(false)
-  created_at                DateTime @default(now())
-  owner                     User     @relation("VaultOwner", fields: [owner_id], references: [id], onDelete: Cascade)
+  sender_signature_verified Boolean   @default(false)
+  version                   Int       @default(0)
+  created_at                DateTime  @default(now())
+  updated_at                DateTime  @default(now()) @updatedAt
+  deleted_at                DateTime?
+  owner                     User      @relation("VaultOwner", fields: [owner_id], references: [id], onDelete: Cascade)
 
   @@index([owner_id, created_at])
+  @@index([owner_id, updated_at])
   @@index([owner_id, id])
+  @@index([owner_id, peer_handle])
 }

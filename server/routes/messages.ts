@@ -23,6 +23,8 @@ const sendSchema = z.object({
   recipient_handle: z.string().min(1),
   encrypted_blob: z.string().min(1),
   message_id: z.string().uuid(),
+  event_type: z.enum(["message", "edit", "delete", "reaction", "receipt"]).optional(),
+  reaction_emoji: z.string().optional(),
   sender_vault_blob: z.string().min(1).optional(),
   sender_vault_iv: z.string().min(1).optional(),
   sender_vault_signature_verified: z.boolean().optional(),
@@ -51,6 +53,8 @@ const storeFromQueueSchema = z.object({
 const vaultUpdateSchema = z.object({
   encrypted_blob: z.string().min(1),
   iv: z.string().min(1),
+  expected_version: z.number().int().min(0).optional(),
+  deleted: z.boolean().optional(),
 });
 
 export const createMessagesRouter = (
@@ -185,6 +189,8 @@ export const createMessagesRouter = (
       recipient_handle,
       encrypted_blob,
       message_id,
+      event_type = "message",
+      reaction_emoji,
       sender_vault_blob,
       sender_vault_iv,
       sender_vault_signature_verified,
@@ -220,6 +226,7 @@ export const createMessagesRouter = (
         data: {
           id: message_id,
           owner_id: req.user!.id,
+          peer_handle: recipientParsed.handle,
           original_sender_handle: recipientParsed.handle,
           encrypted_blob: sender_vault_blob,
           iv: sender_vault_iv,
@@ -314,10 +321,46 @@ export const createMessagesRouter = (
 
     const queueItem = await prisma.$transaction(async (tx) => {
       let senderVaultStored = false;
+
+      // Queue compaction based on event type
+      if (event_type === "delete") {
+        // Delete ALL pending events for this message
+        await tx.incomingQueue.deleteMany({
+          where: {
+            recipient_id: recipient.id,
+            message_id,
+          },
+        });
+      } else if (event_type === "message" || event_type === "edit") {
+        // Replace existing message/edit for this message_id
+        await tx.incomingQueue.deleteMany({
+          where: {
+            recipient_id: recipient.id,
+            message_id,
+            event_type: { in: ["message", "edit"] },
+          },
+        });
+      } else if (event_type === "reaction") {
+        // Replace existing reaction from same sender for same emoji
+        await tx.incomingQueue.deleteMany({
+          where: {
+            recipient_id: recipient.id,
+            message_id,
+            sender_handle: senderHandle,
+            event_type: "reaction",
+            reaction_emoji,
+          },
+        });
+      }
+      // For receipts, no compaction needed - they're informational
+
       const created = await tx.incomingQueue.create({
         data: {
           recipient_id: recipient.id,
           sender_handle: senderHandle,
+          message_id,
+          event_type,
+          reaction_emoji: event_type === "reaction" ? reaction_emoji : null,
           encrypted_blob,
         },
       });
@@ -332,6 +375,7 @@ export const createMessagesRouter = (
             data: {
               id: message_id,
               owner_id: req.user!.id,
+              peer_handle: recipientParsed.handle,
               original_sender_handle: recipientParsed.handle,
               encrypted_blob: sender_vault_blob,
               iv: sender_vault_iv,
@@ -610,33 +654,72 @@ export const createMessagesRouter = (
       return res.status(400).json({ error: "Invalid request" });
     }
 
-    const existing = await prisma.messageVault.findUnique({
-      where: { id },
-      select: { id: true, owner_id: true },
-    });
-    if (!existing) {
-      return res.status(404).json({ error: "Not found" });
+    const { encrypted_blob, iv, expected_version, deleted } = parsed.data;
+
+    try {
+      const updated = await prisma.$transaction(async (tx) => {
+        const existing = await tx.messageVault.findUnique({
+          where: { id },
+          select: { id: true, owner_id: true, version: true },
+        });
+
+        if (!existing) {
+          throw new Error("NOT_FOUND");
+        }
+        if (existing.owner_id !== req.user!.id) {
+          throw new Error("FORBIDDEN");
+        }
+
+        // Optimistic locking: check version if provided
+        if (expected_version !== undefined && existing.version !== expected_version) {
+          throw new Error("VERSION_CONFLICT");
+        }
+
+        return tx.messageVault.update({
+          where: { id },
+          data: {
+            encrypted_blob,
+            iv,
+            version: { increment: 1 },
+            deleted_at: deleted ? new Date() : null,
+          },
+        });
+      });
+
+      serverLogger.info("message.vault.updated", {
+        id: updated.id,
+        owner_id: updated.owner_id,
+        original_sender_handle: updated.original_sender_handle,
+        version: updated.version,
+        deleted: !!updated.deleted_at,
+        updated_at: updated.updated_at.toISOString(),
+      });
+
+      // Notify other devices about the vault update
+      io.to(req.user!.id).emit("VAULT_MESSAGE_UPDATED", {
+        id: updated.id,
+        encrypted_blob: updated.encrypted_blob,
+        iv: updated.iv,
+        version: updated.version,
+        deleted_at: updated.deleted_at?.toISOString() ?? null,
+        updated_at: updated.updated_at.toISOString(),
+      });
+
+      return res.json(updated);
+    } catch (err) {
+      if (err instanceof Error) {
+        if (err.message === "NOT_FOUND") {
+          return res.status(404).json({ error: "Not found" });
+        }
+        if (err.message === "FORBIDDEN") {
+          return res.status(403).json({ error: "Forbidden" });
+        }
+        if (err.message === "VERSION_CONFLICT") {
+          return res.status(409).json({ error: "Version conflict", code: "VERSION_CONFLICT" });
+        }
+      }
+      throw err;
     }
-    if (existing.owner_id !== req.user.id) {
-      return res.status(403).json({ error: "Forbidden" });
-    }
-
-    const updated = await prisma.messageVault.update({
-      where: { id },
-      data: {
-        encrypted_blob: parsed.data.encrypted_blob,
-        iv: parsed.data.iv,
-      },
-    });
-
-    serverLogger.info("message.vault.updated", {
-      id: updated.id,
-      owner_id: updated.owner_id,
-      original_sender_handle: updated.original_sender_handle,
-      updated_at: new Date().toISOString(),
-    });
-
-    return res.json(updated);
   });
 
   router.get("/messages/vault", async (req: Request, res: Response) => {
@@ -662,6 +745,7 @@ export const createMessagesRouter = (
   });
 
   // Delta sync endpoint - fetch messages since a timestamp with cursor pagination
+  // Uses updated_at to catch edits and deletes, not just new messages
   router.get("/messages/vault/sync", async (req: Request, res: Response) => {
     if (!req.user) {
       return res.status(401).json({ error: "Unauthorized" });
@@ -674,7 +758,7 @@ export const createMessagesRouter = (
 
     const where: {
       owner_id: string;
-      created_at?: { gt: Date };
+      updated_at?: { gt: Date };
       id?: { gt: string };
     } = {
       owner_id: req.user.id,
@@ -683,7 +767,7 @@ export const createMessagesRouter = (
     if (since) {
       const sinceDate = new Date(since);
       if (!Number.isNaN(sinceDate.getTime())) {
-        where.created_at = { gt: sinceDate };
+        where.updated_at = { gt: sinceDate };
       }
     }
 
@@ -693,7 +777,7 @@ export const createMessagesRouter = (
 
     const items = await prisma.messageVault.findMany({
       where,
-      orderBy: [{ created_at: "asc" }, { id: "asc" }],
+      orderBy: [{ updated_at: "asc" }, { id: "asc" }],
       take: limit + 1,
     });
 
@@ -709,29 +793,33 @@ export const createMessagesRouter = (
     });
   });
 
-  // Conversation summaries - returns last message per unique sender for sidebar preview
+  // Conversation summaries - returns last message per unique peer for sidebar preview
   router.get("/messages/vault/summaries", async (req: Request, res: Response) => {
     if (!req.user) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
-    // Get the most recent message for each unique original_sender_handle
+    // Get the most recent non-deleted message for each unique peer_handle
     const summaries = await prisma.$queryRaw<
       Array<{
         id: string;
+        peer_handle: string | null;
         original_sender_handle: string;
         encrypted_blob: string;
         iv: string;
         sender_signature_verified: boolean;
+        version: number;
         created_at: Date;
+        updated_at: Date;
       }>
     >`
-      SELECT DISTINCT ON (original_sender_handle)
-        id, original_sender_handle, encrypted_blob, iv,
-        sender_signature_verified, created_at
+      SELECT DISTINCT ON (COALESCE(peer_handle, original_sender_handle))
+        id, peer_handle, original_sender_handle, encrypted_blob, iv,
+        sender_signature_verified, version, created_at, updated_at
       FROM "MessageVault"
       WHERE owner_id = ${req.user.id}::uuid
-      ORDER BY original_sender_handle, created_at DESC
+        AND deleted_at IS NULL
+      ORDER BY COALESCE(peer_handle, original_sender_handle), created_at DESC
     `;
 
     return res.json(summaries);
