@@ -31,7 +31,11 @@ export type StoredMessage = {
   text: string
   attachments?: Attachment[]
   timestamp: string
-  kind?: "message" | "edit" | "delete" | "reaction"
+  kind?: "message" | "edit" | "delete" | "reaction" | "call"
+  callEventType?: "CALL_STARTED" | "CALL_ENDED" | "CALL_MISSED" | "CALL_DECLINED"
+  callType?: "AUDIO" | "VIDEO"
+  callDirection?: "incoming" | "outgoing"
+  callDurationSeconds?: number
   editedAt?: string
   deletedAt?: string
   reactionAction?: "add" | "remove"

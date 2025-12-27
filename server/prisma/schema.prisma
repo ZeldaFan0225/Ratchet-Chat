@@ -26,6 +26,8 @@ model User {
   incoming_queue             IncomingQueue[] @relation("IncomingRecipient")
   vault_messages             MessageVault[]  @relation("VaultOwner")
   sessions                   Session[]       @relation("UserSessions")
+  outgoing_calls             Call[]          @relation("OutgoingCalls")
+  incoming_calls             Call[]          @relation("IncomingCalls")
 }
 
 model Session {
@@ -79,4 +81,23 @@ model MessageVault {
   @@index([owner_id, updated_at])
   @@index([owner_id, id])
   @@index([owner_id, peer_handle])
+}
+
+model Call {
+  id          String    @id @default(uuid()) @db.Uuid
+  caller_id   String    @db.Uuid
+  callee_id   String    @db.Uuid
+  status      String    @default("INITIATED") // INITIATED, RINGING, CONNECTED, ENDED, MISSED, REJECTED
+  call_type   String    @default("AUDIO")     // AUDIO, VIDEO
+  end_reason  String?                         // COMPLETED, CANCELLED, DECLINED, TIMEOUT, ERROR
+  started_at  DateTime?
+  ended_at    DateTime?
+  created_at  DateTime  @default(now())
+
+  caller      User      @relation("OutgoingCalls", fields: [caller_id], references: [id], onDelete: Cascade)
+  callee      User      @relation("IncomingCalls", fields: [callee_id], references: [id], onDelete: Cascade)
+
+  @@index([caller_id])
+  @@index([callee_id])
+  @@index([status])
 }

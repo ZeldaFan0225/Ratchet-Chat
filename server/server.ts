@@ -6,6 +6,7 @@ import { createServer as createHttpsServer } from "https";
 import { Server as SocketIOServer } from "socket.io";
 
 import { createAuthRouter } from "./routes/auth";
+import { createCallsRouter } from "./routes/calls";
 import { createDirectoryRouter } from "./routes/directory";
 import { createMessagesRouter } from "./routes/messages";
 import { getJwtSecret, hashToken, type AuthenticatedUser } from "./middleware/auth";
@@ -17,6 +18,7 @@ import {
 } from "./lib/federationAuth";
 import { startSessionCleanup } from "./lib/sessionCleanup";
 import { getGitCommit } from "./lib/version";
+import { createCallWebSocketServer } from "./lib/callSocket";
 import jwt from "jsonwebtoken";
 
 const app = express();
@@ -80,12 +82,17 @@ const io = new SocketIOServer(server, {
   },
 });
 
+// Create dedicated WebSocket server for calls (pure WebSocket, no polling)
+const callWss = createCallWebSocketServer(server, prisma);
+
 const SESSION_EXPIRY_DAYS = 7;
 
 io.use(async (socket, next) => {
+  console.log(`[SocketIO] Auth middleware`, { socketId: socket.id });
   const rawToken = socket.handshake.auth?.token ?? socket.handshake.query?.token;
   const tokenValue = Array.isArray(rawToken) ? rawToken[0] : rawToken;
   if (!tokenValue || typeof tokenValue !== "string") {
+    console.log(`[SocketIO] Auth failed: no token`, { socketId: socket.id });
     return next(new Error("Unauthorized"));
   }
   const token = tokenValue.startsWith("Bearer ")
@@ -106,11 +113,13 @@ io.use(async (socket, next) => {
     });
 
     if (!session) {
+      console.log(`[SocketIO] Auth failed: session not found`, { socketId: socket.id });
       return next(new Error("Session invalidated"));
     }
 
     if (session.expires_at < new Date()) {
       // Clean up expired session
+      console.log(`[SocketIO] Auth failed: session expired`, { socketId: socket.id });
       await prisma.session.delete({ where: { id: session.id } });
       return next(new Error("Session expired"));
     }
@@ -130,19 +139,24 @@ io.use(async (socket, next) => {
     socket.data.user = { id: payload.sub, username } as AuthenticatedUser;
     socket.data.sessionId = session.id;
     socket.data.tokenHash = tokenHash;
+    console.log(`[SocketIO] Auth successful`, { socketId: socket.id, userId: payload.sub });
     return next();
   } catch (error) {
+    console.error(`[SocketIO] Auth error`, { socketId: socket.id, error: String(error) });
     return next(new Error("Unauthorized"));
   }
 });
 
 io.on("connection", (socket) => {
   const user = socket.data.user as AuthenticatedUser | undefined;
+  console.log(`[SocketIO] Connection attempt`, { userId: user?.id, socketId: socket.id });
   if (!user?.id) {
+    console.log(`[SocketIO] Rejecting: no user id`);
     socket.disconnect(true);
     return;
   }
   socket.join(user.id);
+  console.log(`[SocketIO] User connected`, { userId: user.id, username: user.username, socketId: socket.id });
 
   socket.on("signal", async (data) => {
     const user = socket.data.user as AuthenticatedUser | undefined;
@@ -183,8 +197,12 @@ io.on("connection", (socket) => {
     }
   });
 
-  socket.on("disconnect", () => {
-    // Cleanup if needed
+  socket.on("disconnect", (reason) => {
+    console.log(`[SocketIO] User disconnected`, { userId: user.id, socketId: socket.id, reason });
+  });
+
+  socket.on("error", (error) => {
+    console.error(`[SocketIO] Socket error`, { userId: user.id, socketId: socket.id, error: String(error) });
   });
 });
 
@@ -192,7 +210,7 @@ app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Referrer-Policy", "no-referrer");
-  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  res.setHeader("Permissions-Policy", "camera=(self), microphone=(self), geolocation=()");
   res.setHeader("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none';");
   if ((process.env.NODE_ENV ?? "development") === "production") {
     res.setHeader(
@@ -247,6 +265,7 @@ app.get("/.well-known/ratchet-chat/federation.json", (req, res) => {
 });
 
 app.use("/auth", createAuthRouter(prisma, io));
+app.use("/api/calls", createCallsRouter(prisma));
 app.use("/directory", createDirectoryRouter(prisma));
 app.use("/api/directory", createDirectoryRouter(prisma));
 app.use("/", createMessagesRouter(prisma, io));

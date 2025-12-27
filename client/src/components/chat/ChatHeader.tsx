@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Download, MoreVertical, Search, Trash2 } from "lucide-react"
+import { Download, MoreVertical, Phone, Search, Trash2, Video } from "lucide-react"
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
@@ -26,6 +26,8 @@ type ChatHeaderProps = {
   onShowRecipientInfo: () => void
   onExportChat: () => void
   onDeleteChat: () => void
+  onStartCall?: (type: "AUDIO" | "VIDEO") => void
+  isCallDisabled?: boolean
 }
 
 export function ChatHeader({
@@ -39,6 +41,8 @@ export function ChatHeader({
   onShowRecipientInfo,
   onExportChat,
   onDeleteChat,
+  onStartCall,
+  isCallDisabled = false,
 }: ChatHeaderProps) {
   return (
     <header className="flex flex-none items-center gap-3 border-b bg-background/85 px-5 py-4 backdrop-blur">
@@ -74,6 +78,30 @@ export function ChatHeader({
         </div>
       </div>
       <div className="ml-auto flex items-center gap-2">
+        {onStartCall && (
+          <>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="text-muted-foreground"
+              onClick={() => onStartCall("AUDIO")}
+              disabled={!activeContact || isCallDisabled}
+              title="Start voice call"
+            >
+              <Phone className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="text-muted-foreground"
+              onClick={() => onStartCall("VIDEO")}
+              disabled={!activeContact || isCallDisabled}
+              title="Start video call"
+            >
+              <Video className="h-4 w-4" />
+            </Button>
+          </>
+        )}
         {isChatSearchOpen ? (
           <div className="relative w-40 md:w-60">
             <Input

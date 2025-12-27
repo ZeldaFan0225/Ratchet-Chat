@@ -390,3 +390,32 @@ export function verifySignature(
     base64ToBytes(publicKey)
   )
 }
+    
+    export async function generateSafetyNumber(
+      key1: string,
+      key2: string
+    ): Promise<string> {
+      const sorted = [key1, key2].sort()
+      const input = sorted.join("")
+      const hash = await getSubtleCrypto().digest(
+        "SHA-256",
+        textEncoder.encode(input)
+      )
+      const bytes = new Uint8Array(hash)
+      
+      // Take first 8 bytes (64 bits) -> ~1.8x10^19 possibilities
+      // We want a human readable number, say 12 digits (4 blocks of 3)
+      // We can treat the bytes as a large integer and modulo 10^12
+      
+      let num = BigInt(0)
+      for (let i = 0; i < 8; i++) {
+        num = (num << BigInt(8)) + BigInt(bytes[i])
+      }
+      
+      const fingerprint = (num % BigInt(1000000000000)).toString().padStart(12, "0")
+      
+      // Format as XXX XXX XXX XXX
+      return fingerprint.match(/.{1,3}/g)?.join(" ") ?? fingerprint
+    }
+    
+    

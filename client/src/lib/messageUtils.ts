@@ -81,6 +81,7 @@ export async function decodeMessageRecord(
       attachments?: Attachment[]
       peerId?: string
       peerHandle?: string
+      peer_handle?: string
       peerUsername?: string
       peerHost?: string
       direction?: "in" | "out"
@@ -89,7 +90,7 @@ export async function decodeMessageRecord(
       peerTransportKey?: string
       messageId?: string
       message_id?: string
-      type?: "edit" | "delete" | "reaction" | "receipt" | "message"
+      type?: "edit" | "delete" | "reaction" | "receipt" | "message" | "call"
       edited_at?: string
       editedAt?: string
       deleted_at?: string
@@ -114,6 +115,17 @@ export async function decodeMessageRecord(
       replyToSenderHandle?: string
       reply_to_sender_name?: string
       replyToSenderName?: string
+      event_type?: string
+      eventType?: string
+      call_event?: string
+      callEvent?: string
+      call_type?: "AUDIO" | "VIDEO"
+      callType?: "AUDIO" | "VIDEO"
+      call_direction?: string
+      callDirection?: string
+      duration_seconds?: number
+      durationSeconds?: number
+      duration?: number
     } = {}
     try {
       payload = JSON.parse(plaintext) as typeof payload
@@ -122,6 +134,53 @@ export async function decodeMessageRecord(
     }
     if (payload.type === "receipt") {
       return null
+    }
+    if (payload.type === "call") {
+      const callEventType =
+        payload.event_type ?? payload.eventType ?? payload.call_event ?? payload.callEvent
+      const callType = payload.call_type ?? payload.callType ?? "AUDIO"
+      const callDirection =
+        payload.direction ?? payload.call_direction ?? payload.callDirection ?? "incoming"
+      const messageDirection = callDirection === "outgoing" ? "out" : "in"
+      const isRead = record.isRead ?? messageDirection === "out"
+      const messageId =
+        payload.messageId ??
+        payload.message_id ??
+        (messageDirection === "out" ? record.id : undefined)
+      const replyMessageId =
+        payload.reply_to_message_id ?? payload.replyToMessageId
+      const fallbackHandle = fallbackPeerHandle
+      let resolvedHandle =
+        payload.peerHandle ?? payload.peerId ?? payload.peer_handle ?? fallbackHandle
+      if (messageDirection === "in" && fallbackHandle && resolvedHandle !== fallbackHandle) {
+        resolvedHandle = fallbackHandle
+      }
+      const text = payload.text ?? payload.content ?? ""
+      return {
+        id: record.id,
+        peerHandle: resolvedHandle,
+        peerUsername: payload.peerUsername,
+        peerHost: payload.peerHost,
+        peerIdentityKey: payload.peerIdentityKey,
+        peerTransportKey: payload.peerTransportKey,
+        direction: messageDirection,
+        text,
+        timestamp: payload.timestamp ?? record.createdAt,
+        kind: "call",
+        callEventType: callEventType as any,
+        callType: callType,
+        callDirection: callDirection as any,
+        callDurationSeconds:
+          payload.duration_seconds ?? payload.durationSeconds ?? payload.duration,
+        replyTo: replyMessageId
+          ? {
+              messageId: replyMessageId,
+            }
+          : undefined,
+        verified: record.verified,
+        isRead,
+        messageId,
+      }
     }
     const isReaction = payload.type === "reaction"
     const reactionEmoji =

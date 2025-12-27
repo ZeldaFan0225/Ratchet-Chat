@@ -75,6 +75,7 @@ type AuthContextValue = {
   identityPrivateKey: Uint8Array | null
   transportPrivateKey: CryptoKey | null
   previousTransportPrivateKey: CryptoKey | null
+  publicTransportKey: string | null
   register: (username: string, password: string) => Promise<void>
   login: (username: string, password: string) => Promise<void>
   deleteAccount: () => Promise<void>
@@ -248,6 +249,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     React.useState<CryptoKey | null>(null)
   const [previousTransportPrivateKey, setPreviousTransportPrivateKey] =
     React.useState<CryptoKey | null>(null)
+  const [publicTransportKey, setPublicTransportKey] =
+    React.useState<string | null>(null)
 
   const clearSession = React.useCallback(async (callLogoutApi = true) => {
     if (callLogoutApi && token) {
@@ -269,6 +272,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIdentityPrivateKey(null)
     setTransportPrivateKey(null)
     setPreviousTransportPrivateKey(null)
+    setPublicTransportKey(null)
     setAuthToken(null)
 
     if (typeof window !== "undefined") {
@@ -356,6 +360,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setMasterKey(masterKey)
         setIdentityPrivateKey(identityPrivateKey)
         setTransportPrivateKey(transportPrivateKey)
+        setPublicTransportKey(session.publicTransportKey)
         await refreshPreviousTransportKey(masterKey)
       } catch {
         // Restoration failed - clear data and go to guest
@@ -486,6 +491,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setMasterKey(masterKey)
     setIdentityPrivateKey(identityPair.privateKey)
     setTransportPrivateKey(transportPair.privateKey)
+    setPublicTransportKey(transportPair.publicKey)
   }, [])
 
   const login = React.useCallback(async (usernameInput: string, password: string) => {
@@ -594,6 +600,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setMasterKey(masterKey)
     setIdentityPrivateKey(identityPrivateKey)
     setTransportPrivateKey(transportPrivateKey)
+    setPublicTransportKey(loginResponse.keys.public_transport_key)
   }, [])
 
   const deleteAccount = React.useCallback(async () => {
@@ -713,6 +720,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       publicTransportKey: transportPair.publicKey,
     })
     setTransportPrivateKey(transportPair.privateKey)
+    setPublicTransportKey(transportPair.publicKey)
     await setTransportKeyRotatedAt(rotatedAt)
     try {
       await notifyContactsOfTransportKeyRotation(
@@ -831,6 +839,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       identityPrivateKey,
       transportPrivateKey,
       previousTransportPrivateKey,
+      publicTransportKey,
       register,
       login,
       deleteAccount,

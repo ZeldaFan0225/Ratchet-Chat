@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/sidebar"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { useAuth, type TransportKeyRotationPayload } from "@/context/AuthContext"
+import { useCall } from "@/context/CallContext"
 import { useSocket } from "@/context/SocketContext"
 import { useSettings } from "@/hooks/useSettings"
 import { useRatchetSync } from "@/hooks/useRatchetSync"
@@ -39,6 +40,9 @@ import { RecipientInfoDialog } from "@/components/RecipientInfoDialog"
 import { ImagePreviewDialog } from "@/components/ImagePreviewDialog"
 import { LinkWarningDialog } from "@/components/LinkWarningDialog"
 import { MessageBubble, ComposeArea, ChatHeader } from "@/components/chat"
+import { CallNotice, type CallEventType } from "@/components/chat/CallNotice"
+import { resumeAudioContext } from "@/components/call"
+import { formatDuration } from "@/lib/webrtc"
 import type { Contact, StoredMessage, DirectoryEntry, Attachment } from "@/types/dashboard"
 import {
   decodeContactRecord,
@@ -68,6 +72,7 @@ export function DashboardLayout() {
   const { theme } = useTheme()
   const socket = useSocket()
   const { settings } = useSettings()
+  const { initiateCall, callState } = useCall()
   const { lastSync, runSync, summaries, summariesLoaded } = useRatchetSync()
   const [contacts, setContacts] = React.useState<Contact[]>([])
   const [activeId, setActiveId] = React.useState<string>("")
@@ -112,6 +117,8 @@ export function DashboardLayout() {
     height: number
   } | null>(null)
   const emojiTheme = theme === "dark" ? Theme.DARK : theme === "system" ? Theme.AUTO : Theme.LIGHT
+  const lastCallStateRef = React.useRef<typeof callState | null>(null)
+  const lastCallEventKeyRef = React.useRef<string | null>(null)
   React.useEffect(() => {
     if (typeof window === "undefined") {
       return
@@ -1133,6 +1140,211 @@ export function DashboardLayout() {
     setActiveId("")
   }, [activeContact, user, messages])
 
+  const handleStartCall = React.useCallback(
+    async (callType: "AUDIO" | "VIDEO") => {
+      if (!activeContact) {
+        return
+      }
+      let publicTransportKey = activeContact.publicTransportKey
+
+      try {
+        const entry = await apiFetch<DirectoryEntry>(
+          `/api/directory?handle=${encodeURIComponent(activeContact.handle)}`
+        )
+        if (entry.public_transport_key) {
+          publicTransportKey = entry.public_transport_key
+          if (entry.public_transport_key !== activeContact.publicTransportKey) {
+            const updatedContact: Contact = {
+              ...activeContact,
+              publicIdentityKey: entry.public_identity_key ?? activeContact.publicIdentityKey,
+              publicTransportKey: entry.public_transport_key,
+            }
+            setContacts((current) =>
+              current.map((contact) =>
+                contact.handle === updatedContact.handle ? updatedContact : contact
+              )
+            )
+            if (masterKey && user?.handle) {
+              const ownerId = user.id ?? user.handle
+              void saveContactRecord(masterKey, ownerId, updatedContact)
+            }
+          }
+        }
+      } catch {
+        // Directory lookup is best-effort; fall back to stored key.
+      }
+
+      if (!publicTransportKey) {
+        return
+      }
+
+      // Resume AudioContext on user gesture for Safari
+      resumeAudioContext()
+      void initiateCall(activeContact.handle, publicTransportKey, callType)
+    },
+    [activeContact, initiateCall, masterKey, user]
+  )
+
+  const buildCallEventText = React.useCallback(
+    (
+      eventType: CallEventType,
+      callType: "AUDIO" | "VIDEO",
+      direction: "incoming" | "outgoing",
+      durationSeconds?: number
+    ) => {
+      const callTypeLabel = callType === "VIDEO" ? "video" : "voice"
+      switch (eventType) {
+        case "CALL_STARTED":
+          return direction === "incoming"
+            ? `Incoming ${callTypeLabel} call`
+            : `Outgoing ${callTypeLabel} call`
+        case "CALL_ENDED": {
+          const durationStr = durationSeconds ? ` - ${formatDuration(durationSeconds)}` : ""
+          return `${direction === "incoming" ? "Incoming" : "Outgoing"} ${callTypeLabel} call ended${durationStr}`
+        }
+        case "CALL_MISSED":
+          return direction === "outgoing"
+            ? `Outgoing ${callTypeLabel} call (no answer)`
+            : `Missed ${callTypeLabel} call`
+        case "CALL_DECLINED":
+          return direction === "incoming"
+            ? `Declined ${callTypeLabel} call`
+            : `${callTypeLabel.charAt(0).toUpperCase() + callTypeLabel.slice(1)} call declined`
+      }
+    },
+    []
+  )
+
+  const addCallEventMessage = React.useCallback(
+    async ({
+      peerHandle,
+      callType,
+      direction,
+      eventType,
+      durationSeconds,
+      timestamp,
+      callId,
+    }: {
+      peerHandle: string
+      callType: "AUDIO" | "VIDEO"
+      direction: "incoming" | "outgoing"
+      eventType: CallEventType
+      durationSeconds?: number
+      timestamp?: string
+      callId?: string | null
+    }) => {
+      if (!masterKey || !user?.handle) {
+        return
+      }
+
+      const eventKey = `${eventType}:${callId ?? timestamp ?? ""}:${peerHandle}`
+      if (lastCallEventKeyRef.current === eventKey) {
+        return
+      }
+      lastCallEventKeyRef.current = eventKey
+
+      const contact = contacts.find((entry) => entry.handle === peerHandle) ?? null
+      const handleParts = splitHandle(peerHandle)
+      const peerUsername = contact?.username ?? handleParts?.username ?? peerHandle
+      const peerHost = contact?.host ?? handleParts?.host ?? ""
+      const createdAt = timestamp ?? new Date().toISOString()
+      const text = buildCallEventText(eventType, callType, direction, durationSeconds)
+
+      const payload = JSON.stringify({
+        type: "call",
+        event_type: eventType,
+        call_type: callType,
+        direction,
+        duration_seconds: durationSeconds,
+        text,
+        peerHandle,
+        peerUsername,
+        peerHost,
+        peerIdentityKey: contact?.publicIdentityKey ?? "",
+        peerTransportKey: contact?.publicTransportKey ?? "",
+        timestamp: createdAt,
+      })
+
+      const encryptedLocal = await encryptString(masterKey, payload)
+      const recordId = `call:${callId ?? crypto.randomUUID()}:${eventType}`
+      const localRecord: MessageRecord = {
+        id: recordId,
+        ownerId: user?.id ?? user?.handle ?? "me",
+        senderId: direction === "incoming" ? peerHandle : user?.handle ?? "me",
+        peerHandle,
+        content: JSON.stringify({
+          encrypted_blob: encryptedLocal.ciphertext,
+          iv: encryptedLocal.iv,
+        }),
+        verified: true,
+        isRead: direction === "outgoing",
+        vaultSynced: false,
+        createdAt,
+      }
+
+      await db.messages.put(localRecord)
+      const decoded = await decodeMessageRecord(
+        localRecord,
+        masterKey,
+        localRecord.senderId
+      )
+      if (decoded) {
+        setMessages((current) => [...current, decoded])
+      }
+    },
+    [buildCallEventText, contacts, masterKey, user]
+  )
+
+  React.useEffect(() => {
+    const prev = lastCallStateRef.current
+    lastCallStateRef.current = callState
+
+    const peerHandle = callState.peerHandle ?? prev?.peerHandle
+    const callType = callState.callType ?? prev?.callType
+    const direction = callState.direction ?? prev?.direction
+    if (!peerHandle || !callType || !direction) {
+      return
+    }
+
+    if (prev?.status === "incoming" && callState.status === "idle") {
+      void addCallEventMessage({
+        peerHandle,
+        callType,
+        direction: "incoming",
+        eventType: "CALL_DECLINED",
+        timestamp: new Date().toISOString(),
+        callId: prev?.callId,
+      })
+      return
+    }
+
+    if (callState.status === "ended" && prev?.status !== "ended") {
+      const startedAt = callState.startedAt ?? prev?.startedAt
+      const durationSeconds = startedAt
+        ? Math.max(0, Math.floor((Date.now() - startedAt.getTime()) / 1000))
+        : undefined
+      const errorText = callState.error?.toLowerCase() ?? ""
+      let eventType: CallEventType
+      if (errorText.includes("declined") || errorText.includes("busy")) {
+        eventType = "CALL_DECLINED"
+      } else if (!startedAt) {
+        eventType = "CALL_MISSED"
+      } else {
+        eventType = "CALL_ENDED"
+      }
+
+      void addCallEventMessage({
+        peerHandle,
+        callType,
+        direction,
+        eventType,
+        durationSeconds,
+        timestamp: new Date().toISOString(),
+        callId: callState.callId ?? prev?.callId,
+      })
+    }
+  }, [addCallEventMessage, callState])
+
   const handleExportChat = React.useCallback(() => {
     if (!activeContact) return
     const threadMessages = messagesByPeer.get(activeContact.handle) ?? []
@@ -2075,6 +2287,8 @@ export function DashboardLayout() {
           onShowRecipientInfo={() => setShowRecipientInfo(true)}
           onExportChat={handleExportChat}
           onDeleteChat={handleDeleteChat}
+          onStartCall={handleStartCall}
+          isCallDisabled={callState.status !== "idle"}
         />
 
         <div
@@ -2133,6 +2347,21 @@ export function DashboardLayout() {
                     </div>
                   )}
                   {activeMessages.map((message) => {
+                    if (message.kind === "call" && message.callEventType && message.callType) {
+                      return (
+                        <CallNotice
+                          key={message.id}
+                          eventType={message.callEventType}
+                          callType={message.callType}
+                          direction={
+                            message.callDirection ??
+                            (message.direction === "out" ? "outgoing" : "incoming")
+                          }
+                          durationSeconds={message.callDurationSeconds}
+                          timestamp={new Date(message.timestamp)}
+                        />
+                      )
+                    }
                     const isPickerOpen = reactionPickerId === message.id
                     const showActions = isTouchActions
                       ? activeActionMessageId === message.id
