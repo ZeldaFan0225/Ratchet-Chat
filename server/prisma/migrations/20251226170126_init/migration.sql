@@ -11,13 +11,13 @@
 
 */
 -- DropForeignKey
-ALTER TABLE "Device" DROP CONSTRAINT "Device_user_id_fkey";
+ALTER TABLE IF EXISTS "Device" DROP CONSTRAINT IF EXISTS "Device_user_id_fkey";
 
 -- DropForeignKey
-ALTER TABLE "Receipt" DROP CONSTRAINT "Receipt_recipient_id_fkey";
+ALTER TABLE IF EXISTS "Receipt" DROP CONSTRAINT IF EXISTS "Receipt_recipient_id_fkey";
 
 -- DropIndex
-DROP INDEX "MessageVault_owner_id_created_at_idx";
+DROP INDEX IF EXISTS "MessageVault_owner_id_created_at_idx";
 
 -- AlterTable
 ALTER TABLE "MessageVault" DROP COLUMN "client_sent_at",
@@ -27,10 +27,10 @@ DROP COLUMN "vector_clock",
 ALTER COLUMN "iv" SET NOT NULL;
 
 -- DropTable
-DROP TABLE "Device";
+DROP TABLE IF EXISTS "Device";
 
 -- DropTable
-DROP TABLE "Receipt";
+DROP TABLE IF EXISTS "Receipt";
 
 -- DropEnum
-DROP TYPE "ReceiptType";
+DROP TYPE IF EXISTS "ReceiptType";
