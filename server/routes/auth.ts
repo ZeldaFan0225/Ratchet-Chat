@@ -295,6 +295,8 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
       },
     });
 
+    io?.to(req.user.id).emit("BLOCK_LIST_UPDATED", { ciphertext, iv });
+
     return res.json({ success: true });
   });
 

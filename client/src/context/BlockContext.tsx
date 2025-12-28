@@ -5,6 +5,7 @@ import { db } from "@/lib/db"
 import { encryptString, decryptString, type EncryptedPayload } from "@/lib/crypto"
 import { apiFetch } from "@/lib/api"
 import { useAuth } from "./AuthContext"
+import { useSocket } from "@/context/SocketContext"
 
 type BlockList = {
   users: string[] // Full handles like "alice@server.com"
@@ -28,9 +29,39 @@ const BlockContext = React.createContext<BlockContextValue | undefined>(undefine
 
 export function BlockProvider({ children }: { children: React.ReactNode }) {
   const { status, masterKey } = useAuth()
+  const socket = useSocket()
   const [blockedUsers, setBlockedUsers] = React.useState<string[]>([])
   const [blockedServers, setBlockedServers] = React.useState<string[]>([])
   const [isLoading, setIsLoading] = React.useState(true)
+
+  const applyEncryptedBlockList = React.useCallback(
+    async (encrypted: EncryptedPayload | null) => {
+      if (!encrypted) {
+        setBlockedUsers([])
+        setBlockedServers([])
+        await db.syncState.delete(BLOCK_LIST_KEY)
+        return
+      }
+
+      await db.syncState.put({ key: BLOCK_LIST_KEY, value: encrypted })
+
+      if (!masterKey) {
+        return
+      }
+
+      try {
+        const decrypted = await decryptString(masterKey, encrypted)
+        const blockList = JSON.parse(decrypted) as BlockList
+        const users = (blockList.users ?? []).map((entry) => entry.toLowerCase())
+        const servers = (blockList.servers ?? []).map((entry) => entry.toLowerCase())
+        setBlockedUsers(users)
+        setBlockedServers(servers)
+      } catch (error) {
+        console.error("Failed to decrypt block list:", error)
+      }
+    },
+    [masterKey]
+  )
 
   // Load block list: try server first, fall back to local cache
   React.useEffect(() => {
@@ -41,6 +72,8 @@ export function BlockProvider({ children }: { children: React.ReactNode }) {
       return
     }
 
+    let active = true
+    setIsLoading(true)
     async function loadBlockList() {
       try {
         // Try to load from server first
@@ -51,33 +84,49 @@ export function BlockProvider({ children }: { children: React.ReactNode }) {
         let encrypted: EncryptedPayload | null = null
 
         if (serverData?.ciphertext && serverData?.iv) {
-          // Use server data
           encrypted = { ciphertext: serverData.ciphertext, iv: serverData.iv }
-          // Update local cache
-          await db.syncState.put({ key: BLOCK_LIST_KEY, value: encrypted })
         } else {
-          // Fall back to local cache
           const record = await db.syncState.get(BLOCK_LIST_KEY)
           if (record?.value) {
             encrypted = record.value as EncryptedPayload
           }
         }
 
-        if (encrypted) {
-          const decrypted = await decryptString(masterKey!, encrypted)
-          const blockList = JSON.parse(decrypted) as BlockList
-          setBlockedUsers(blockList.users ?? [])
-          setBlockedServers(blockList.servers ?? [])
-        }
+        await applyEncryptedBlockList(encrypted)
       } catch (error) {
         console.error("Failed to load block list:", error)
       } finally {
-        setIsLoading(false)
+        if (active) {
+          setIsLoading(false)
+        }
       }
     }
 
     void loadBlockList()
-  }, [status, masterKey])
+    return () => {
+      active = false
+    }
+  }, [status, masterKey, applyEncryptedBlockList])
+
+  React.useEffect(() => {
+    if (!socket) return
+
+    const handleBlockListUpdated = (payload?: { ciphertext?: string; iv?: string }) => {
+      if (!payload?.ciphertext || !payload?.iv) {
+        return
+      }
+      void applyEncryptedBlockList({
+        ciphertext: payload.ciphertext,
+        iv: payload.iv,
+      })
+    }
+
+    socket.on("BLOCK_LIST_UPDATED", handleBlockListUpdated)
+
+    return () => {
+      socket.off("BLOCK_LIST_UPDATED", handleBlockListUpdated)
+    }
+  }, [socket, applyEncryptedBlockList])
 
   // Save encrypted block list to both local and server
   const saveBlockList = React.useCallback(

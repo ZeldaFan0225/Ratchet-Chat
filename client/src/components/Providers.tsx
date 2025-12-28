@@ -28,15 +28,13 @@ function ProvidersWithAuth({ children }: { children: React.ReactNode }) {
 
   return (
     <SettingsProvider>
-      <BlockProvider>
-        {status === "authenticated" ? (
-          <SocketProvider token={token} onSessionInvalidated={logout}>
-            {content}
-          </SocketProvider>
-        ) : (
-          content
-        )}
-      </BlockProvider>
+      {status === "authenticated" ? (
+        <SocketProvider token={token} onSessionInvalidated={logout}>
+          <BlockProvider>{content}</BlockProvider>
+        </SocketProvider>
+      ) : (
+        <BlockProvider>{content}</BlockProvider>
+      )}
     </SettingsProvider>
   )
 }
