@@ -24,6 +24,7 @@ services:
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3001}
       LOG_DIR: /data/logs
       SERVER_CERT_PATH: /data/.cert
+      OPAQUE_FILE_PATH: /data/.opaque
     volumes:
       - server-data:/data
     depends_on:

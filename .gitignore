@@ -20,6 +20,8 @@ logs
 
 .cert
 **/.cert
+.opaque
+**/.opaque
 
 .env
 .env.*
