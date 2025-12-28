@@ -181,6 +181,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   const lastOutboundAudioRef = useRef<{ energy: number; duration: number } | null>(null)
   const pendingIceCandidatesRef = useRef<RTCIceCandidate[]>([])
   const selfSessionClaimsRef = useRef<Set<string>>(new Set())
+  const externalCallIdRef = useRef<string | null>(null)
 
   const clearIncomingForExternalCall = useCallback(() => {
     if (callStateRef.current.status !== "incoming") {
@@ -210,9 +211,11 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         if (payload.action === "accepted") {
           externalCallActiveRef.current = true
           setExternalCallActive(true)
+          externalCallIdRef.current = payload.call_id ?? null
         } else {
           externalCallActiveRef.current = false
           setExternalCallActive(false)
+          externalCallIdRef.current = null
         }
         return
       }
@@ -220,10 +223,12 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       if (payload.status === "active") {
         externalCallActiveRef.current = true
         setExternalCallActive(true)
+        externalCallIdRef.current = payload.call_id ?? null
         clearIncomingForExternalCall()
       } else if (payload.status === "idle") {
         externalCallActiveRef.current = false
         setExternalCallActive(false)
+        externalCallIdRef.current = null
       }
     },
     [clearIncomingForExternalCall]
@@ -231,7 +236,12 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
 
   const broadcastSessionUpdate = useCallback((status: "active" | "idle") => {
     if (typeof window === "undefined") return
-    const payload = { status, origin: sessionIdRef.current, ts: Date.now() }
+    const payload = {
+      status,
+      call_id: callStateRef.current.callId ?? null,
+      origin: sessionIdRef.current,
+      ts: Date.now(),
+    }
     if (broadcastRef.current) {
       broadcastRef.current.postMessage(payload)
     }
@@ -649,9 +659,11 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         if (payload.call_action === "session_accepted") {
           externalCallActiveRef.current = true
           setExternalCallActive(true)
+          externalCallIdRef.current = payload.call_id
         } else {
           externalCallActiveRef.current = false
           setExternalCallActive(false)
+          externalCallIdRef.current = null
         }
         return
       }
@@ -665,11 +677,14 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       switch (payload.call_action) {
         case "offer":
           // Check if this is a renegotiation for the current call
-          if (
-            callStateRef.current.status === "connected" &&
-            callStateRef.current.callId === payload.call_id &&
+          const isConnected = callStateRef.current.status === "connected"
+          const sameCallId =
+            !!callStateRef.current.callId &&
+            callStateRef.current.callId === payload.call_id
+          const samePeer =
+            !!callStateRef.current.peerHandle &&
             callStateRef.current.peerHandle === senderHandle
-          ) {
+          if (isConnected && (sameCallId || samePeer)) {
             // Renegotiation - peer added/removed tracks (e.g., screen share)
             logCall("info", "Received renegotiation offer")
             void (async () => {
@@ -708,6 +723,13 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
             callStateRef.current.status !== "idle" ||
             externalCallActiveRef.current
           ) {
+            if (
+              externalCallActiveRef.current &&
+              externalCallIdRef.current &&
+              payload.call_id === externalCallIdRef.current
+            ) {
+              return
+            }
             // Auto-respond busy - need to fetch transport key first
             void (async () => {
               try {
@@ -814,6 +836,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         case "busy":
         case "declined":
           if (callStateRef.current.callId !== payload.call_id) return
+          if (callStateRef.current.status === "connected") return
           if (timeoutRef.current) {
             clearTimeout(timeoutRef.current)
             timeoutRef.current = null

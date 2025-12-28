@@ -50,6 +50,7 @@ export function useWebRTC(config: UseWebRTCConfig) {
   const screenStreamRef = useRef<MediaStream | null>(null)
   const videoSenderRef = useRef<RTCRtpSender | null>(null)
   const screenSenderRef = useRef<RTCRtpSender | null>(null)
+  const screenTransceiverRef = useRef<RTCRtpTransceiver | null>(null)
   const cameraTrackRef = useRef<MediaStreamTrack | null>(null)
   const pendingCandidatesRef = useRef<RTCIceCandidate[]>([])
   const [connectionState, setConnectionState] = useState<ConnectionState>("new")
@@ -350,15 +351,21 @@ export function useWebRTC(config: UseWebRTCConfig) {
     }
 
     const pc = peerConnectionRef.current
-    if (pc && screenSenderRef.current) {
-      await screenSenderRef.current.replaceTrack(screenTrack)
-      logRTC("Replaced screen share track on existing sender")
-    } else if (pc && localStreamRef.current) {
-      // Add screen track as a NEW track (don't replace camera)
-      // This allows remote to see both camera and screen share
-      const sender = pc.addTrack(screenTrack, localStreamRef.current)
-      screenSenderRef.current = sender
-      logRTC("Added screen track alongside camera")
+    if (pc && screenTransceiverRef.current) {
+      screenTransceiverRef.current.direction = "sendonly"
+      await screenTransceiverRef.current.sender.replaceTrack(screenTrack)
+      screenSenderRef.current = screenTransceiverRef.current.sender
+      logRTC("Replaced screen share track on existing transceiver")
+      onNegotiationNeeded?.()
+    } else if (pc) {
+      const transceiver = pc.addTransceiver(screenTrack, {
+        direction: "sendonly",
+        streams: localStreamRef.current ? [localStreamRef.current] : undefined,
+      })
+      screenTransceiverRef.current = transceiver
+      screenSenderRef.current = transceiver.sender
+      logRTC("Added screen transceiver alongside camera")
+      onNegotiationNeeded?.()
     }
 
     screenStreamRef.current = screenStream
@@ -369,10 +376,12 @@ export function useWebRTC(config: UseWebRTCConfig) {
   const stopScreenShare = useCallback(async () => {
     logRTC("Stopping screen share")
 
-    // Detach screen track but keep the sender to avoid m-section mismatch on renegotiation
-    if (screenSenderRef.current) {
-      await screenSenderRef.current.replaceTrack(null)
+    // Detach screen track but keep the transceiver to avoid m-section mismatch
+    if (screenTransceiverRef.current) {
+      screenTransceiverRef.current.direction = "inactive"
+      await screenTransceiverRef.current.sender.replaceTrack(null)
       logRTC("Detached screen track from peer connection")
+      onNegotiationNeeded?.()
     }
 
     // Stop screen stream tracks
@@ -412,6 +421,7 @@ export function useWebRTC(config: UseWebRTCConfig) {
     screenStreamRef.current = null
     videoSenderRef.current = null
     screenSenderRef.current = null
+    screenTransceiverRef.current = null
     cameraTrackRef.current = null
     pendingCandidatesRef.current = []
     lastConnectionStateRef.current = "closed"
