@@ -347,7 +347,11 @@ export function CallOverlay({
       y: e.clientY - rect.top,
     })
     setIsDragging(true)
-    minimizedRef.current.setPointerCapture(e.pointerId)
+    try {
+      minimizedRef.current.setPointerCapture(e.pointerId)
+    } catch {
+      // Pointer capture can fail on some mobile browsers
+    }
   }
 
   const handlePointerMove = (e: React.PointerEvent) => {
@@ -361,8 +365,17 @@ export function CallOverlay({
   const handlePointerUp = (e: React.PointerEvent) => {
     if (!isDragging || !minimizedRef.current) return
     setIsDragging(false)
-    minimizedRef.current.releasePointerCapture(e.pointerId)
+    try {
+      minimizedRef.current.releasePointerCapture(e.pointerId)
+    } catch {
+      // Pointer capture release can fail
+    }
     findNearestAnchor()
+  }
+
+  const handlePointerCancel = (e: React.PointerEvent) => {
+    if (!isDragging) return
+    handlePointerUp(e)
   }
 
   const findNearestAnchor = () => {
@@ -446,7 +459,7 @@ export function CallOverlay({
             transitionTimingFunction: "cubic-bezier(0.34, 1.56, 0.64, 1)", 
         }}
         className={cn(
-          "bg-background/95 border rounded-xl shadow-xl overflow-hidden backdrop-blur-sm",
+          "bg-background/95 border rounded-xl shadow-xl overflow-hidden backdrop-blur-sm touch-none select-none",
           // Only animate when NOT dragging. 
           // 500ms duration for visible bounce.
           !isDragging && canAnimate && "transition-all duration-500",
@@ -456,6 +469,13 @@ export function CallOverlay({
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
+        onLostPointerCapture={() => {
+          if (isDragging) {
+            setIsDragging(false)
+            findNearestAnchor()
+          }
+        }}
       >
         {/* Hidden audio element for minimized playback */}
         <audio ref={remoteAudioRef} autoPlay playsInline />
@@ -794,7 +814,7 @@ export function CallOverlay({
                   visibility: pip.isHidden ? "hidden" : "visible",
                 }}
                 className={cn(
-                  "flex gap-2",
+                  "flex gap-2 touch-none select-none",
                   // Vertical layout for ML/MR, horizontal for others
                   (pip.anchor === "ML" || pip.anchor === "MR") ? "flex-col" : "flex-row",
                   !pip.isDragging && pip.canAnimate && "transition-all duration-500",

@@ -182,6 +182,8 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   const pendingIceCandidatesRef = useRef<RTCIceCandidate[]>([])
   const selfSessionClaimsRef = useRef<Set<string>>(new Set())
   const externalCallIdRef = useRef<string | null>(null)
+  const isRenegotiatingRef = useRef(false)
+  const closeWebRTCRef = useRef<(() => void) | null>(null)
 
   const clearIncomingForExternalCall = useCallback(() => {
     if (callStateRef.current.status !== "incoming") {
@@ -423,6 +425,20 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     )
   }, [])
 
+  const resetWebRTCState = useCallback((reason: string) => {
+    logCall("info", "Resetting WebRTC state", { reason })
+    pendingIceCandidatesRef.current = []
+    isRenegotiatingRef.current = false
+    closeWebRTCRef.current?.()
+    setLocalStream(null)
+    setRemoteStream(null)
+  }, [])
+
+  const cleanupAfterCall = useCallback((reason: string) => {
+    pendingOfferRef.current = null
+    resetWebRTCState(reason)
+  }, [resetWebRTCState])
+
   const disconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const handleConnectionStateChange = useCallback((state: ConnectionState) => {
@@ -467,7 +483,6 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     }
   }, [resetWebRTCState])
 
-  const isRenegotiatingRef = useRef(false)
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null)
   const sendCallMessageRef = useRef<typeof sendCallMessage | null>(null)
 
@@ -547,19 +562,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     onNegotiationNeeded: handleNegotiationNeeded,
   })
 
-  const resetWebRTCState = useCallback((reason: string) => {
-    logCall("info", "Resetting WebRTC state", { reason })
-    pendingIceCandidatesRef.current = []
-    isRenegotiatingRef.current = false
-    closeWebRTC()
-    setLocalStream(null)
-    setRemoteStream(null)
-  }, [closeWebRTC])
-
-  const cleanupAfterCall = useCallback((reason: string) => {
-    pendingOfferRef.current = null
-    resetWebRTCState(reason)
-  }, [resetWebRTCState])
+  closeWebRTCRef.current = closeWebRTC
 
   // Keep refs updated for use in callbacks
   useEffect(() => {
