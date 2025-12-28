@@ -280,7 +280,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!socket) return
 
-    const handleSessionUpdate = (payload: { status?: string; origin?: string }) => {
+    const handleSessionUpdate = (payload: { status?: "active" | "idle"; origin?: string }) => {
       if (!payload || payload.origin === socket.id) {
         return
       }
@@ -412,20 +412,44 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     )
   }, [])
 
+  const disconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   const handleConnectionStateChange = useCallback((state: ConnectionState) => {
+    // Clear any pending disconnect timeout
+    if (disconnectTimeoutRef.current) {
+      clearTimeout(disconnectTimeoutRef.current)
+      disconnectTimeoutRef.current = null
+    }
+
     if (state === "connected") {
       setCallState((prev) => ({
         ...prev,
         status: "connected",
         startedAt: prev.startedAt || new Date(),
       }))
-    } else if (state === "failed" || state === "disconnected") {
+    } else if (state === "failed") {
+      // Failed is permanent - end immediately
       if (callStateRef.current.status === "connected") {
         setCallState((prev) => ({
           ...prev,
           status: "ended",
-          error: state === "failed" ? "Connection failed" : "Connection lost",
+          error: "Connection failed",
         }))
+      }
+    } else if (state === "disconnected") {
+      // Disconnected can be temporary - wait before ending
+      if (callStateRef.current.status === "connected") {
+        logCall("info", "Connection disconnected, waiting for reconnection...")
+        disconnectTimeoutRef.current = setTimeout(() => {
+          // Only end if still disconnected after timeout
+          if (callStateRef.current.status === "connected") {
+            setCallState((prev) => ({
+              ...prev,
+              status: "ended",
+              error: "Connection lost",
+            }))
+          }
+        }, 15000) // 15 second grace period for reconnection
       }
     }
   }, [])
@@ -1188,6 +1212,11 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current)
         timeoutRef.current = null
+      }
+
+      if (disconnectTimeoutRef.current) {
+        clearTimeout(disconnectTimeoutRef.current)
+        disconnectTimeoutRef.current = null
       }
 
       // Send end message

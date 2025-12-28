@@ -298,6 +298,7 @@ export const createMessagesRouter = (
       if (senderVaultStored && sender_vault_blob && sender_vault_iv) {
         io.to(req.user!.id).emit("OUTGOING_MESSAGE_SYNCED", {
           message_id,
+          owner_id: req.user!.id,
           original_sender_handle: recipientParsed.handle,
           encrypted_blob: sender_vault_blob,
           iv: sender_vault_iv,
@@ -422,6 +423,7 @@ export const createMessagesRouter = (
     if (queueItem.senderVaultStored && sender_vault_blob && sender_vault_iv) {
       io.to(req.user!.id).emit("OUTGOING_MESSAGE_SYNCED", {
         message_id,
+        owner_id: req.user!.id,
         original_sender_handle: recipientParsed.handle,
         encrypted_blob: sender_vault_blob,
         iv: sender_vault_iv,
@@ -645,6 +647,16 @@ export const createMessagesRouter = (
       owner_id: entry.owner_id,
       original_sender_handle: entry.original_sender_handle,
       created_at: entry.created_at,
+    });
+
+    io.to(req.user!.id).emit("OUTGOING_MESSAGE_SYNCED", {
+      message_id: entry.id,
+      owner_id: entry.owner_id,
+      original_sender_handle: entry.original_sender_handle,
+      encrypted_blob: entry.encrypted_blob,
+      iv: entry.iv,
+      sender_signature_verified: entry.sender_signature_verified,
+      created_at: entry.created_at.toISOString(),
     });
 
     return res.status(201).json(entry);

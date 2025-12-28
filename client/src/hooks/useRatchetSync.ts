@@ -166,10 +166,11 @@ const isNewerTimestamp = (current: string | undefined, next: string) => {
 
 type UseRatchetSyncOptions = {
   onCallMessage?: (senderHandle: string, senderIdentityKey: string, payload: CallMessagePayload) => void
+  onVaultMessageSynced?: (messageId: string, action: "upsert" | "delete") => void
 }
 
 export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
-  const { onCallMessage } = options
+  const { onCallMessage, onVaultMessageSynced } = options
   const {
     masterKey,
     transportPrivateKey,
@@ -184,6 +185,12 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
   const [lastSync, setLastSync] = React.useState(0)
   const [summaries, setSummaries] = React.useState<Map<string, DecryptedSummary>>(new Map())
   const [summariesLoaded, setSummariesLoaded] = React.useState(false)
+  const bumpLastSync = React.useCallback(() => {
+    setLastSync((prev) => {
+      const now = Date.now()
+      return now > prev ? now : prev + 1
+    })
+  }, [])
 
   const updateMessageTimestamps = React.useCallback(
     async (params: {
@@ -271,10 +278,10 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
       } catch {
         // Best-effort: local state remains authoritative for this device.
       }
-      setLastSync(Date.now())
+      bumpLastSync()
       return true
     },
-    [masterKey]
+    [masterKey, bumpLastSync]
   )
 
   const sendReceiptEvent = React.useCallback(
@@ -775,7 +782,7 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
         }
       }
       
-      setLastSync(Date.now())
+      bumpLastSync()
     },
     [
       masterKey,
@@ -786,6 +793,7 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
       settings.sendReadReceipts,
       updateMessageTimestamps,
       onCallMessage,
+      bumpLastSync,
     ]
   )
 
@@ -801,9 +809,9 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
       }
     } finally {
       isSyncingRef.current = false
-      setLastSync(Date.now())
+      bumpLastSync()
     }
-  }, [masterKey, transportPrivateKey, processSingleQueueItem])
+  }, [masterKey, transportPrivateKey, processSingleQueueItem, bumpLastSync])
 
   const syncVault = React.useCallback(async () => {
     if (!masterKey) {
@@ -903,9 +911,9 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
         }
       } while (cursor && pageCount < maxPages)
     } finally {
-      setLastSync(Date.now())
+      bumpLastSync()
     }
-  }, [masterKey, user?.handle, user?.id])
+  }, [masterKey, user?.handle, user?.id, bumpLastSync])
 
   const syncOutgoingVault = React.useCallback(async () => {
     if (!masterKey || !user?.handle) {
@@ -931,6 +939,7 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
         direction?: "in" | "out"
         peerHandle?: string
         peerId?: string
+        type?: string
       } = {}
       try {
         const plaintext = await decryptString(masterKey, {
@@ -941,7 +950,9 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
       } catch {
         continue
       }
-      if (payload.direction !== "out") {
+      const payloadType = payload.type ?? "message"
+      const isCallNotice = payloadType === "call"
+      if (!isCallNotice && payload.direction !== "out") {
         await db.messages.update(record.id, { vaultSynced: true })
         continue
       }
@@ -1205,6 +1216,7 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
     // Handle outgoing messages synced from other devices
     const outgoingHandler = async (payload: {
       message_id: string
+      owner_id?: string
       original_sender_handle: string
       encrypted_blob: string
       iv: string
@@ -1227,10 +1239,12 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
       // Check if message already exists locally
       const existing = await db.messages.get(payload.message_id)
       if (existing) {
+        bumpLastSync()
+        onVaultMessageSynced?.(payload.message_id, "upsert")
         return
       }
       // Store the outgoing message from another device
-      const ownerId = user?.id ?? user?.handle ?? ""
+      const ownerId = payload.owner_id ?? user?.id ?? user?.handle ?? ""
       await db.messages.put({
         id: payload.message_id,
         ownerId,
@@ -1245,7 +1259,8 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
         vaultSynced: true,
         createdAt: payload.created_at,
       })
-      setLastSync(Date.now())
+      bumpLastSync()
+      onVaultMessageSynced?.(payload.message_id, "upsert")
     }
     socket.on("OUTGOING_MESSAGE_SYNCED", outgoingHandler)
 
@@ -1275,10 +1290,12 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
       // Check if message already exists locally
       const existing = await db.messages.get(payload.id)
       if (existing) {
+        bumpLastSync()
+        onVaultMessageSynced?.(payload.id, "upsert")
         return
       }
       // Store the incoming message that was stored to vault by another device
-      const ownerId = user?.id ?? user?.handle ?? ""
+      const ownerId = payload.owner_id ?? user?.id ?? user?.handle ?? ""
       await db.messages.put({
         id: payload.id,
         ownerId,
@@ -1293,7 +1310,8 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
         vaultSynced: true,
         createdAt: payload.created_at,
       })
-      setLastSync(Date.now())
+      bumpLastSync()
+      onVaultMessageSynced?.(payload.id, "upsert")
     }
     socket.on("INCOMING_MESSAGE_SYNCED", incomingSyncedHandler)
 
@@ -1312,6 +1330,7 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
       if (payload.deleted_at) {
         // Soft delete: remove from local DB
         await db.messages.delete(payload.id)
+        onVaultMessageSynced?.(payload.id, "delete")
       } else {
         // Update content
         await db.messages.update(payload.id, {
@@ -1320,8 +1339,9 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
             iv: payload.iv,
           }),
         })
+        onVaultMessageSynced?.(payload.id, "upsert")
       }
-      setLastSync(Date.now())
+      bumpLastSync()
     }
     socket.on("VAULT_MESSAGE_UPDATED", vaultUpdateHandler)
 
@@ -1334,7 +1354,16 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
       socket.off("VAULT_MESSAGE_UPDATED", vaultUpdateHandler)
       socket.disconnect()
     }
-  }, [masterKey, transportPrivateKey, runSync, user?.handle, user?.id, processSingleQueueItem])
+  }, [
+    masterKey,
+    transportPrivateKey,
+    runSync,
+    user?.handle,
+    user?.id,
+    processSingleQueueItem,
+    bumpLastSync,
+    onVaultMessageSynced,
+  ])
 
   return { processQueue, syncVault, runSync, lastSync, summaries, summariesLoaded, fetchSummaries }
 }

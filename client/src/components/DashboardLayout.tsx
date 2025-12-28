@@ -94,9 +94,6 @@ export function DashboardLayout() {
   const socket = useSocket()
   const { settings } = useSettings()
   const { initiateCall, callState, handleCallMessage, externalCallActive } = useCall()
-  const { lastSync, runSync, summaries, summariesLoaded } = useRatchetSync({
-    onCallMessage: handleCallMessage,
-  })
   const [contacts, setContacts] = React.useState<Contact[]>([])
   const [activeId, setActiveId] = React.useState<string>("")
   const [messages, setMessages] = React.useState<StoredMessage[]>([])
@@ -142,6 +139,41 @@ export function DashboardLayout() {
   const emojiTheme = theme === "dark" ? Theme.DARK : theme === "system" ? Theme.AUTO : Theme.LIGHT
   const lastCallStateRef = React.useRef<typeof callState | null>(null)
   const lastCallEventKeyRef = React.useRef<string | null>(null)
+  const handleVaultMessageSync = React.useCallback(
+    async (messageId: string, action: "upsert" | "delete") => {
+      if (!masterKey) {
+        return
+      }
+      if (action === "delete") {
+        setMessages((current) =>
+          current.filter((message) => message.id !== messageId)
+        )
+        return
+      }
+      const record = await db.messages.get(messageId)
+      if (!record) {
+        return
+      }
+      const decoded = await decodeMessageRecord(record, masterKey, record.senderId)
+      if (!decoded) {
+        return
+      }
+      setMessages((current) => {
+        const index = current.findIndex((message) => message.id === decoded.id)
+        if (index === -1) {
+          return [...current, decoded]
+        }
+        const next = [...current]
+        next[index] = decoded
+        return next
+      })
+    },
+    [masterKey]
+  )
+  const { lastSync, runSync, summaries, summariesLoaded } = useRatchetSync({
+    onCallMessage: handleCallMessage,
+    onVaultMessageSynced: handleVaultMessageSync,
+  })
   React.useEffect(() => {
     if (typeof window === "undefined") {
       return
@@ -1307,7 +1339,7 @@ export function DashboardLayout() {
       })
 
       const encryptedLocal = await encryptString(masterKey, payload)
-      const recordId = `call:${callId ?? crypto.randomUUID()}:${eventType}`
+      const recordId = crypto.randomUUID()
       const localRecord: MessageRecord = {
         id: recordId,
         ownerId: user?.id ?? user?.handle ?? "me",
@@ -1331,6 +1363,22 @@ export function DashboardLayout() {
       )
       if (decoded) {
         setMessages((current) => [...current, decoded])
+      }
+
+      try {
+        await apiFetch("/messages/vault", {
+          method: "POST",
+          body: {
+            message_id: recordId,
+            original_sender_handle: peerHandle,
+            encrypted_blob: encryptedLocal.ciphertext,
+            iv: encryptedLocal.iv,
+            sender_signature_verified: true,
+          },
+        })
+        await db.messages.update(recordId, { vaultSynced: true })
+      } catch {
+        // Best-effort: syncOutgoingVault will retry.
       }
     },
     [buildCallEventText, contacts, masterKey, user]

@@ -31,6 +31,7 @@ const getAnchorPosition = (
   let targetX = 0
   let targetY = 0
 
+  // All positions use consistent margins from edges
   switch (anchor) {
     case "TL": targetX = offsetLeft + margin; targetY = offsetTop + margin; break
     case "TC": targetX = offsetLeft + (winW - rect.width) / 2; targetY = offsetTop + margin; break
@@ -42,6 +43,7 @@ const getAnchorPosition = (
     case "BR": targetX = offsetLeft + winW - margin - rect.width; targetY = offsetTop + winH - margin - rect.height; break
   }
 
+  // Clamp to viewport bounds with margin
   const minX = offsetLeft + margin
   const minY = offsetTop + margin
   const maxX = offsetLeft + Math.max(margin, winW - margin - rect.width)
@@ -229,38 +231,21 @@ export function useDraggable(config: UseDraggableConfig = {}) {
     setAnchor(best.id)
   }, [viewport, margin])
 
-  const handlePointerDown = useCallback((e: React.PointerEvent) => {
-    if (!ref.current || !enabled) return
-    e.preventDefault()
-    e.stopPropagation()
+  const pointerIdRef = useRef<number | null>(null)
+  const positionRef = useRef<{ x: number; y: number } | null>(null)
 
-    const rect = ref.current.getBoundingClientRect()
-    setPosition({ x: rect.left, y: rect.top })
-    setDragOffset({
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
-    })
-    setIsDragging(true)
-    setIsHidden(false)
-    setHiddenEdge(null)
-    ref.current.setPointerCapture(e.pointerId)
-  }, [enabled])
+  // Keep position ref in sync
+  useEffect(() => {
+    positionRef.current = position
+  }, [position])
 
-  const handlePointerMove = useCallback((e: React.PointerEvent) => {
+  const finishDrag = useCallback(() => {
     if (!isDragging) return
-    setPosition({
-      x: e.clientX - dragOffset.x,
-      y: e.clientY - dragOffset.y,
-    })
-  }, [isDragging, dragOffset])
-
-  const handlePointerUp = useCallback((e: React.PointerEvent) => {
-    if (!isDragging || !ref.current) return
     setIsDragging(false)
-    ref.current.releasePointerCapture(e.pointerId)
+    pointerIdRef.current = null
 
     // Check if should hide
-    const currentPos = position ?? { x: 0, y: 0 }
+    const currentPos = positionRef.current ?? { x: 0, y: 0 }
     const edge = checkHiddenEdge(currentPos)
     if (edge) {
       setIsHidden(true)
@@ -268,13 +253,95 @@ export function useDraggable(config: UseDraggableConfig = {}) {
     } else {
       findNearestAnchor()
     }
-  }, [isDragging, position, checkHiddenEdge, findNearestAnchor])
+  }, [isDragging, checkHiddenEdge, findNearestAnchor])
 
-  const show = useCallback(() => {
+  // Document-level pointer up listener as fallback
+  useEffect(() => {
+    if (!isDragging) return
+
+    const handleDocumentPointerUp = () => {
+      finishDrag()
+    }
+
+    // Also handle if pointer leaves the window
+    const handlePointerLeave = (e: PointerEvent) => {
+      if (e.pointerType === "mouse" && !e.relatedTarget) {
+        finishDrag()
+      }
+    }
+
+    document.addEventListener("pointerup", handleDocumentPointerUp)
+    document.addEventListener("pointercancel", handleDocumentPointerUp)
+    document.documentElement.addEventListener("pointerleave", handlePointerLeave)
+
+    return () => {
+      document.removeEventListener("pointerup", handleDocumentPointerUp)
+      document.removeEventListener("pointercancel", handleDocumentPointerUp)
+      document.documentElement.removeEventListener("pointerleave", handlePointerLeave)
+    }
+  }, [isDragging, finishDrag])
+
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    if (!ref.current || !enabled) return
+    e.preventDefault()
+    e.stopPropagation()
+
+    const rect = ref.current.getBoundingClientRect()
+    const newPos = { x: rect.left, y: rect.top }
+    setPosition(newPos)
+    positionRef.current = newPos
+    setDragOffset({
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+    })
+    setIsDragging(true)
     setIsHidden(false)
     setHiddenEdge(null)
-    // Will snap to nearest anchor on next render
-  }, [])
+    pointerIdRef.current = e.pointerId
+    try {
+      ref.current.setPointerCapture(e.pointerId)
+    } catch {
+      // Pointer capture can fail in some edge cases
+    }
+  }, [enabled])
+
+  const handlePointerMove = useCallback((e: React.PointerEvent) => {
+    if (!isDragging) return
+    const newPos = {
+      x: e.clientX - dragOffset.x,
+      y: e.clientY - dragOffset.y,
+    }
+    setPosition(newPos)
+    positionRef.current = newPos
+  }, [isDragging, dragOffset])
+
+  const handlePointerUp = useCallback((e: React.PointerEvent) => {
+    if (!isDragging || !ref.current) return
+    try {
+      ref.current.releasePointerCapture(e.pointerId)
+    } catch {
+      // Pointer capture release can fail
+    }
+    finishDrag()
+  }, [isDragging, finishDrag])
+
+  const handleLostPointerCapture = useCallback(() => {
+    // Pointer capture was lost - finish the drag
+    finishDrag()
+  }, [finishDrag])
+
+  const show = useCallback((atEdge?: boolean) => {
+    // When showing at edge, set anchor based on hidden edge
+    if (atEdge && hiddenEdge) {
+      const edgeAnchor: SnapAnchor =
+        hiddenEdge === "left" ? "ML" :
+        hiddenEdge === "right" ? "MR" :
+        hiddenEdge === "top" ? "TC" : "BC"
+      setAnchor(edgeAnchor)
+    }
+    setIsHidden(false)
+    setHiddenEdge(null)
+  }, [hiddenEdge])
 
   // Get hidden position (off-screen)
   const getHiddenPosition = useCallback(() => {
@@ -309,6 +376,8 @@ export function useDraggable(config: UseDraggableConfig = {}) {
       onPointerDown: handlePointerDown,
       onPointerMove: handlePointerMove,
       onPointerUp: handlePointerUp,
+      onPointerCancel: finishDrag,
+      onLostPointerCapture: handleLostPointerCapture,
     },
   }
 }

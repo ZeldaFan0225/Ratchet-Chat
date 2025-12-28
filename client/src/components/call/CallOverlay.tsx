@@ -1,13 +1,14 @@
 "use client"
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
-import { PhoneOff, Minimize2, Maximize2, Shield, Lock, Mic, MicOff, Video, VideoOff, MonitorUp, MonitorOff, ScanText } from "lucide-react"
+import { PhoneOff, Minimize2, Maximize2, Shield, Lock, Mic, MicOff, Video, VideoOff, MonitorUp, MonitorOff, ScanText, GripVertical } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { CallControls } from "./CallControls"
 import { AudioLevelIndicator } from "./AudioLevelIndicator"
 import { formatDuration } from "@/lib/webrtc"
 import { cn } from "@/lib/utils"
+import { useDraggable } from "@/hooks/useDraggable"
 import type { CallStatus, CallType } from "@/context/CallContext"
 
 type CallOverlayProps = {
@@ -142,6 +143,15 @@ export function CallOverlay({
 
   // Vertical layout is determined by side anchors
   const isVertical = anchor === "ML" || anchor === "MR"
+
+  // Draggable PiP for maximized view - only when showing video UI and has content
+  const hasPipContent = hasRemoteCameraPip || (isVideoCall && !!localStream)
+  const pip = useDraggable({
+    initialAnchor: "BR",
+    margin: 16,
+    hideThreshold: 40,
+    enabled: !isMinimized && showVideoUI && hasPipContent,
+  })
 
   // Track viewport size (visual viewport when available) for responsive snapping
   useEffect(() => {
@@ -461,6 +471,9 @@ export function CallOverlay({
               playsInline
               className="w-full h-full object-contain"
             />
+            <span className="absolute bottom-0.5 left-1 text-[8px] text-white bg-black/50 px-1 rounded truncate max-w-[calc(100%-8px)]">
+              {username}
+            </span>
           </div>
         ) : (
           <Avatar className={isVertical ? "size-10" : "size-10"}>
@@ -709,18 +722,44 @@ export function CallOverlay({
         </Button>
       </div>
 
+      {/* Hidden PiP drag handle - show when PiP is hidden at edge (placed outside video area to avoid clipping) */}
+      {pip.isHidden && pip.hiddenEdge && (
+        <div
+          className={cn(
+            "fixed bg-background/90 backdrop-blur-sm cursor-pointer shadow-lg border flex items-center justify-center hover:bg-background z-[60]",
+            pip.hiddenEdge === "right" && "right-0 top-1/2 -translate-y-1/2 w-3 h-16 rounded-l-full border-r-0",
+            pip.hiddenEdge === "left" && "left-0 top-1/2 -translate-y-1/2 w-3 h-16 rounded-r-full border-l-0",
+            pip.hiddenEdge === "top" && "top-0 left-1/2 -translate-x-1/2 h-3 w-16 rounded-b-full border-t-0",
+            pip.hiddenEdge === "bottom" && "bottom-0 left-1/2 -translate-x-1/2 h-3 w-16 rounded-t-full border-b-0"
+          )}
+          onClick={() => {
+            pip.show(true)
+          }}
+        >
+          <GripVertical className={cn(
+            "size-3 text-muted-foreground",
+            (pip.hiddenEdge === "top" || pip.hiddenEdge === "bottom") && "rotate-90"
+          )} />
+        </div>
+      )}
+
       {/* Video/Audio area */}
       <div className="flex-1 flex items-center justify-center relative overflow-hidden bg-black">
         {showVideoUI ? (
           <>
             {/* Remote video (main) or placeholder - show avatar if no video tracks */}
             {hasRemoteVideo ? (
-              <video
-                ref={remoteVideoRef}
-                autoPlay
-                playsInline
-                className="w-full h-full object-contain"
-              />
+              <>
+                <video
+                  ref={remoteVideoRef}
+                  autoPlay
+                  playsInline
+                  className="w-full h-full object-contain"
+                />
+                <span className="absolute bottom-3 left-3 text-sm text-white bg-black/50 px-2 py-0.5 rounded">
+                  {username}{hasRemoteCameraPip ? " (Screen)" : ""}
+                </span>
+              </>
             ) : (
               <div className="flex flex-col items-center gap-4">
                 <Avatar className="size-32">
@@ -741,43 +780,72 @@ export function CallOverlay({
             )}
 
             {/* PiP stack: remote camera (when screen sharing) + local video */}
-            <div className="absolute bottom-4 right-4 flex flex-col gap-2">
-              {/* Remote camera PiP - shown when peer is screen sharing and has camera */}
-              {hasRemoteCameraPip && (
-                <div className="w-32 h-24 md:w-48 md:h-36 rounded-lg overflow-hidden border-2 border-background shadow-lg bg-black">
-                  <video
-                    ref={remoteCameraRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="block w-full h-full object-cover"
-                  />
-                </div>
-              )}
+            {hasPipContent && (
+              <div
+                ref={pip.ref}
+                style={{
+                  position: pip.position ? "fixed" : "absolute",
+                  left: pip.position?.x ?? undefined,
+                  top: pip.position?.y ?? undefined,
+                  right: pip.position ? undefined : 16,
+                  bottom: pip.position ? undefined : 16,
+                  zIndex: 50,
+                  transitionTimingFunction: "cubic-bezier(0.34, 1.56, 0.64, 1)",
+                  // Keep in DOM but visually hidden when isHidden
+                  visibility: pip.isHidden ? "hidden" : "visible",
+                }}
+                className={cn(
+                  "flex gap-2",
+                  // Vertical layout for ML/MR, horizontal for others
+                  (pip.anchor === "ML" || pip.anchor === "MR") ? "flex-col" : "flex-row",
+                  !pip.isDragging && pip.canAnimate && "transition-all duration-500",
+                  pip.isDragging ? "cursor-grabbing scale-105" : "cursor-grab"
+                )}
+                {...pip.handlers}
+              >
+                {/* Remote camera PiP - shown when peer is screen sharing and has camera */}
+                {hasRemoteCameraPip && (
+                  <div className="relative w-32 h-24 md:w-48 md:h-36 rounded-lg overflow-hidden border-2 border-background shadow-lg bg-black pointer-events-none">
+                    <video
+                      ref={remoteCameraRef}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="absolute inset-0 w-full h-full object-cover"
+                    />
+                    <span className="absolute bottom-1 left-1.5 text-[10px] text-white bg-black/50 px-1 rounded">
+                      {username}
+                    </span>
+                  </div>
+                )}
 
-              {/* Local video (picture-in-picture) - only show for video calls with camera */}
-              {isVideoCall && localStream && (
-                <div className="w-32 h-24 md:w-48 md:h-36 rounded-lg overflow-hidden border-2 border-background shadow-lg">
-                  <video
-                    ref={localVideoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className={cn(
-                      "block w-full h-full object-cover",
-                      !isCameraOn && "hidden"
+                {/* Local video (picture-in-picture) - only show for video calls with camera */}
+                {isVideoCall && localStream && (
+                  <div className="relative w-32 h-24 md:w-48 md:h-36 rounded-lg overflow-hidden border-2 border-background shadow-lg bg-black pointer-events-none">
+                    <video
+                      ref={localVideoRef}
+                      autoPlay
+                      playsInline
+                      muted
+                      className={cn(
+                        "absolute inset-0 w-full h-full object-cover",
+                        !isCameraOn && "hidden"
+                      )}
+                    />
+                    {!isCameraOn && (
+                      <div className="absolute inset-0 bg-muted flex items-center justify-center">
+                        <Avatar>
+                          <AvatarFallback>You</AvatarFallback>
+                        </Avatar>
+                      </div>
                     )}
-                  />
-                  {!isCameraOn && (
-                    <div className="w-full h-full bg-muted flex items-center justify-center">
-                      <Avatar>
-                        <AvatarFallback>You</AvatarFallback>
-                      </Avatar>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
+                    <span className="absolute bottom-1 left-1.5 text-[10px] text-white bg-black/50 px-1 rounded">
+                      You
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
           </>
         ) : (
           /* Audio call or waiting for video */
