@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Ban, Copy, Eye, EyeOff, Fingerprint, Key, Lock, LogOut, Monitor, Plus, Server, Shield, Trash2, User } from "lucide-react"
+import { Ban, ChevronRight, Copy, Eye, EyeOff, Fingerprint, Key, Lock, LogOut, Monitor, Plus, Server, Shield, Trash2, User } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -12,15 +12,24 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useAuth, type SessionInfo, type PasskeyInfo } from "@/context/AuthContext"
 import { useBlock } from "@/context/BlockContext"
 import { useCall } from "@/context/CallContext"
 import { useSettings } from "@/hooks/useSettings"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Separator } from "@/components/ui/separator"
 
 function parseDeviceInfo(userAgent: string | null): string {
   if (!userAgent) return "Unknown device"
@@ -65,6 +74,8 @@ function formatKeyPreview(key: string, head = 18, tail = 14): string {
   return `${key.slice(0, head)}...${key.slice(-tail)}`
 }
 
+type SettingsPage = "privacy" | "access" | "security" | "blocking"
+
 export function SettingsDialog({
   open,
   onOpenChange,
@@ -85,6 +96,7 @@ export function SettingsDialog({
   const [rotateTransportError, setRotateTransportError] = React.useState<string | null>(null)
   const [transportRotatedAt, setTransportRotatedAt] = React.useState<number | null>(null)
   const [loadingTransportRotatedAt, setLoadingTransportRotatedAt] = React.useState(false)
+  const [activePage, setActivePage] = React.useState<SettingsPage | null>(null)
 
   // Session management state
   const [sessions, setSessions] = React.useState<SessionInfo[]>([])
@@ -212,6 +224,7 @@ export function SettingsDialog({
       setNewBlockedUser("")
       setNewBlockedServer("")
       setBlockError(null)
+      setActivePage(null)
     }
   }, [open])
 
@@ -330,452 +343,584 @@ export function SettingsDialog({
       setIsDeleting(false)
     }
   }, [deleteAccount, deleteLabel, isDeleteMatch, onOpenChange])
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[550px] max-h-[85vh] flex flex-col">
-        <DialogHeader>
-          <DialogTitle>Settings</DialogTitle>
-          <DialogDescription>
-            Manage your privacy and security preferences.
-          </DialogDescription>
-        </DialogHeader>
-        <Tabs defaultValue="privacy" className="w-full flex-1 min-h-0 flex flex-col">
-          <div className="sticky top-0 z-10 bg-background">
-            <TabsList className="grid w-full grid-cols-3 sm:grid-cols-5 h-auto p-1">
-              <TabsTrigger value="privacy">Privacy</TabsTrigger>
-              <TabsTrigger value="blocked">Blocked</TabsTrigger>
-              <TabsTrigger value="passkeys">Passkeys</TabsTrigger>
-              <TabsTrigger value="sessions">Sessions</TabsTrigger>
-              <TabsTrigger value="security">Security</TabsTrigger>
-            </TabsList>
+
+  const settingsPages = [
+    {
+      id: "privacy",
+      title: "Privacy",
+      description: "Control what others can see.",
+      icon: Eye,
+    },
+    {
+      id: "access",
+      title: "Access",
+      description: "Passkeys and signed-in devices.",
+      icon: Key,
+    },
+    {
+      id: "security",
+      title: "Security",
+      description: "Keys, transport settings, and account safety.",
+      icon: Shield,
+    },
+    {
+      id: "blocking",
+      title: "Blocking",
+      description: "Manage blocked users and servers.",
+      icon: Ban,
+    },
+  ] as const satisfies ReadonlyArray<{
+    id: SettingsPage
+    title: string
+    description: string
+    icon: React.ElementType
+  }>
+
+  const activePageInfo = activePage
+    ? settingsPages.find((page) => page.id === activePage)
+    : null
+  const dialogDescription = activePageInfo
+    ? activePageInfo.description
+    : "Manage your privacy and security preferences."
+
+  const settingsPageContent: Record<SettingsPage, React.ReactNode> = {
+    privacy: (
+      <div className="space-y-6 py-4">
+        <div className="space-y-1">
+          <h3 className="text-sm font-medium">Messaging</h3>
+          <p className="text-xs text-muted-foreground">
+            Choose what activity details others can see.
+          </p>
+        </div>
+        <div className="flex items-center justify-between space-x-2">
+          <div className="space-y-1">
+            <Label htmlFor="typing" className="text-base">Typing Indicator</Label>
+            <p className="text-xs text-muted-foreground">
+              Show others when you are typing.
+            </p>
+          </div>
+          <Switch
+            id="typing"
+            checked={settings.showTypingIndicator}
+            onCheckedChange={(checked) =>
+              updateSettings({ showTypingIndicator: checked })
+            }
+          />
+        </div>
+
+        <div className="flex items-center justify-between space-x-2">
+          <div className="space-y-1">
+            <Label htmlFor="receipts" className="text-base">Read Receipts</Label>
+            <p className="text-xs text-muted-foreground">
+              Let others know when you have read their messages.
+            </p>
+          </div>
+          <Switch
+            id="receipts"
+            checked={settings.sendReadReceipts}
+            onCheckedChange={(checked) =>
+              updateSettings({ sendReadReceipts: checked })
+            }
+          />
+        </div>
+      </div>
+    ),
+    access: (
+      <div className="space-y-8 py-4">
+        <div className="space-y-4">
+          <div className="space-y-1">
+            <h3 className="text-sm font-medium">Sign-in methods</h3>
+            <p className="text-xs text-muted-foreground">
+              Manage passkeys tied to this account.
+            </p>
           </div>
 
-          <div className="flex-1 min-h-0 overflow-y-auto">
-            <TabsContent value="privacy" className="space-y-4 py-4">
-            <div className="flex items-center justify-between space-x-2">
-              <div className="space-y-1">
-                <Label htmlFor="typing" className="text-base">Typing Indicator</Label>
-                <p className="text-xs text-muted-foreground">
-                  Show others when you are typing.
-                </p>
-              </div>
-              <Switch
-                id="typing"
-                checked={settings.showTypingIndicator}
-                onCheckedChange={(checked) =>
-                  updateSettings({ showTypingIndicator: checked })
-                }
-              />
-            </div>
-            
-            <div className="flex items-center justify-between space-x-2">
-              <div className="space-y-1">
-                <Label htmlFor="receipts" className="text-base">Read Receipts</Label>
-                <p className="text-xs text-muted-foreground">
-                  Let others know when you have read their messages.
-                </p>
-              </div>
-              <Switch
-                id="receipts"
-                checked={settings.sendReadReceipts}
-                onCheckedChange={(checked) =>
-                  updateSettings({ sendReadReceipts: checked })
-                }
-              />
-            </div>
-            </TabsContent>
-
-            <TabsContent value="blocked" className="space-y-6 py-4">
-              {/* Blocked Users Section */}
-              <div className="space-y-3">
-                <div className="space-y-1">
-                  <h3 className="text-sm font-medium flex items-center gap-2">
-                    <User className="h-4 w-4" />
-                    Blocked Users
-                  </h3>
-                  <p className="text-xs text-muted-foreground">
-                    Messages from blocked users won&apos;t appear in your chats.
-                  </p>
-                </div>
-
-                {blockedUsers.length === 0 ? (
-                  <p className="text-sm text-muted-foreground italic">No blocked users</p>
-                ) : (
-                  <div className="space-y-2 max-h-[150px] overflow-y-auto">
-                    {blockedUsers.map((handle) => (
-                      <div
-                        key={handle}
-                        className="flex items-center justify-between rounded-lg border p-2"
-                      >
-                        <span className="text-sm font-mono">{handle}</span>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                          onClick={() => unblockUser(handle)}
-                          title="Unblock user"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <div className="flex gap-2">
-                  <Input
-                    value={newBlockedUser}
-                    onChange={(e) => setNewBlockedUser(e.target.value)}
-                    placeholder="user@server.com"
-                    className="flex-1"
-                    onKeyDown={(e) => e.key === "Enter" && handleBlockUser()}
-                  />
-                  <Button variant="outline" size="sm" onClick={handleBlockUser}>
-                    <Ban className="h-4 w-4 mr-1" />
-                    Block
-                  </Button>
-                </div>
-              </div>
-
-              {/* Blocked Servers Section */}
-              <div className="space-y-3">
-                <div className="space-y-1">
-                  <h3 className="text-sm font-medium flex items-center gap-2">
-                    <Server className="h-4 w-4" />
-                    Blocked Servers
-                  </h3>
-                  <p className="text-xs text-muted-foreground">
-                    All users from blocked servers won&apos;t appear in your chats.
-                  </p>
-                </div>
-
-                {blockedServers.length === 0 ? (
-                  <p className="text-sm text-muted-foreground italic">No blocked servers</p>
-                ) : (
-                  <div className="space-y-2 max-h-[150px] overflow-y-auto">
-                    {blockedServers.map((server) => (
-                      <div
-                        key={server}
-                        className="flex items-center justify-between rounded-lg border p-2"
-                      >
-                        <span className="text-sm font-mono">@{server}</span>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                          onClick={() => unblockServer(server)}
-                          title="Unblock server"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <div className="flex gap-2">
-                  <Input
-                    value={newBlockedServer}
-                    onChange={(e) => setNewBlockedServer(e.target.value)}
-                    placeholder="server.com"
-                    className="flex-1"
-                    onKeyDown={(e) => e.key === "Enter" && handleBlockServer()}
-                  />
-                  <Button variant="outline" size="sm" onClick={handleBlockServer}>
-                    <Ban className="h-4 w-4 mr-1" />
-                    Block
-                  </Button>
-                </div>
-              </div>
-
-              {blockError ? (
-                <p className="text-sm text-destructive">{blockError}</p>
-              ) : null}
-
-              <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-900/30 dark:bg-amber-900/10">
-                <Shield className="mt-0.5 h-4 w-4 text-amber-600 dark:text-amber-400" />
-                <div className="space-y-1">
-                  <p className="text-xs font-medium text-amber-900 dark:text-amber-100">Encrypted Block List</p>
-                  <p className="text-[10px] text-amber-700 dark:text-amber-300">
-                    Your block list is encrypted locally. The server cannot see who you&apos;ve blocked.
-                  </p>
-                </div>
-              </div>
-            </TabsContent>
-
-            <TabsContent value="sessions" className="space-y-6 py-4">
-            <div className="space-y-1 mb-4">
-              <h3 className="text-sm font-medium">Active Sessions</h3>
-              <p className="text-xs text-muted-foreground">
-                Devices where you are currently logged in. Sessions expire after 7 days of inactivity.
-              </p>
-            </div>
-
-            {loadingSessions ? (
-              <p className="text-sm text-muted-foreground">Loading sessions...</p>
-            ) : (
-              <div className="space-y-3 max-h-[300px] overflow-y-auto">
-                {sessions.map((session) => (
-                  <div
-                    key={session.id}
-                    className={cn(
-                      "flex items-start justify-between rounded-lg border p-3",
-                      session.isCurrent && "border-emerald-500 bg-emerald-50/50 dark:bg-emerald-900/10"
-                    )}
-                  >
-                    <div className="flex items-start gap-3">
-                      <Monitor className="mt-0.5 h-4 w-4 text-muted-foreground" />
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium">
-                            {parseDeviceInfo(session.deviceInfo)}
-                          </span>
-                          {session.isCurrent && (
-                            <Badge variant="outline" className="text-[10px]">
-                              Current
-                            </Badge>
-                          )}
-                        </div>
-                        <p className="text-xs text-muted-foreground">
-                          {session.ipAddress ?? "Unknown IP"} &bull; Created {formatRelativeTime(session.createdAt)}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          Last active {formatRelativeTime(session.lastActiveAt)}
-                        </p>
-                      </div>
-                    </div>
-                    {!session.isCurrent && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 text-destructive hover:text-destructive"
-                        onClick={() => handleInvalidateSession(session.id)}
-                        disabled={invalidatingSessionId === session.id}
-                        title="Log out this session"
-                      >
-                        <LogOut className="h-4 w-4" />
-                      </Button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {sessions.length > 1 && (
-              <Button
-                variant="outline"
-                className="w-full"
-                onClick={handleInvalidateAllOther}
-              >
-                Log out all other sessions
-              </Button>
-            )}
-            </TabsContent>
-
-            <TabsContent value="passkeys" className="space-y-4 py-4">
-              <div className="space-y-1 mb-4">
-                <h3 className="text-sm font-medium">Your Passkeys</h3>
-                <p className="text-xs text-muted-foreground">
-                  Passkeys are a secure, phishing-resistant way to sign in. You need at least one passkey to access your account.
-                </p>
-              </div>
-
-              {loadingPasskeys ? (
-                <p className="text-sm text-muted-foreground">Loading passkeys...</p>
-              ) : (
-                <div className="space-y-3 max-h-[250px] overflow-y-auto">
-                  {passkeys.map((passkey) => (
-                    <div
-                      key={passkey.id}
-                      className="flex items-start justify-between rounded-lg border p-3"
-                    >
-                      <div className="flex items-start gap-3">
-                        <Key className="mt-0.5 h-4 w-4 text-muted-foreground" />
-                        <div className="space-y-1">
-                          <span className="text-sm font-medium">
-                            {passkey.name || "Passkey"}
-                          </span>
-                          <p className="text-xs text-muted-foreground">
-                            Created {formatRelativeTime(passkey.createdAt)}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            Last used {formatRelativeTime(passkey.lastUsedAt)}
-                          </p>
-                        </div>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 text-destructive hover:text-destructive"
-                        onClick={() => handleRemovePasskey(passkey.credentialId)}
-                        disabled={removingPasskeyId === passkey.credentialId || passkeys.length <= 1}
-                        title={passkeys.length <= 1 ? "Cannot remove last passkey" : "Remove passkey"}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {passkeyError ? (
-                <p className="text-sm text-destructive">{passkeyError}</p>
-              ) : null}
-
-              <div className="mt-4 space-y-3 rounded-lg border p-4">
-                <h4 className="text-sm font-medium">Add a new passkey</h4>
-                <div className="space-y-2">
-                  <Label htmlFor="passkey-name" className="text-xs">
-                    Name (optional)
-                  </Label>
-                  <Input
-                    id="passkey-name"
-                    value={newPasskeyName}
-                    onChange={(e) => setNewPasskeyName(e.target.value)}
-                    placeholder="e.g., Work laptop, Phone"
-                    disabled={addingPasskey}
-                  />
-                </div>
-                <Button
-                  onClick={handleAddPasskey}
-                  disabled={addingPasskey}
-                  className="w-full"
-                >
-                  <Plus className="mr-2 h-4 w-4" />
-                  {addingPasskey ? "Adding passkey..." : "Add Passkey"}
-                </Button>
-              </div>
-            </TabsContent>
-
-            <TabsContent value="security" className="space-y-4 py-4">
-            <div className="rounded-lg border bg-muted/50 p-4">
-              <div className="mb-4 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Fingerprint className="h-4 w-4 text-emerald-600" />
-                  <span className="font-semibold text-sm">Identity Key</span>
-                </div>
-                <Badge variant="outline" className="text-[10px] font-mono">ML-DSA-65</Badge>
-              </div>
-              <div className="flex items-start gap-2">
+          {loadingPasskeys ? (
+            <p className="text-sm text-muted-foreground">Loading passkeys...</p>
+          ) : (
+            <div className="space-y-3">
+              {passkeys.map((passkey) => (
                 <div
+                  key={passkey.id}
+                  className="flex items-start justify-between rounded-lg border p-3"
+                >
+                  <div className="flex items-start gap-3">
+                    <Key className="mt-0.5 h-4 w-4 text-muted-foreground" />
+                    <div className="space-y-1">
+                      <span className="text-sm font-medium">
+                        {passkey.name || "Passkey"}
+                      </span>
+                      <p className="text-xs text-muted-foreground">
+                        Created {formatRelativeTime(passkey.createdAt)}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Last used {formatRelativeTime(passkey.lastUsedAt)}
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-destructive hover:text-destructive"
+                    onClick={() => handleRemovePasskey(passkey.credentialId)}
+                    disabled={removingPasskeyId === passkey.credentialId || passkeys.length <= 1}
+                    title={passkeys.length <= 1 ? "Cannot remove last passkey" : "Remove passkey"}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {passkeyError ? (
+            <p className="text-sm text-destructive">{passkeyError}</p>
+          ) : null}
+
+          <div className="space-y-3 rounded-lg border p-4">
+            <h4 className="text-sm font-medium">Add a new passkey</h4>
+            <div className="space-y-2">
+              <Label htmlFor="passkey-name" className="text-xs">
+                Name (optional)
+              </Label>
+              <Input
+                id="passkey-name"
+                value={newPasskeyName}
+                onChange={(e) => setNewPasskeyName(e.target.value)}
+                placeholder="e.g., Work laptop, Phone"
+                disabled={addingPasskey}
+              />
+            </div>
+            <Button
+              onClick={handleAddPasskey}
+              disabled={addingPasskey}
+              className="w-full"
+            >
+              <Plus className="mr-2 h-4 w-4" />
+              {addingPasskey ? "Adding passkey..." : "Add Passkey"}
+            </Button>
+          </div>
+        </div>
+
+        <Separator />
+
+        <div className="space-y-4">
+          <div className="space-y-1">
+            <h3 className="text-sm font-medium">Active sessions</h3>
+            <p className="text-xs text-muted-foreground">
+              Devices where you are currently logged in. Sessions expire after 7 days of inactivity.
+            </p>
+          </div>
+
+          {loadingSessions ? (
+            <p className="text-sm text-muted-foreground">Loading sessions...</p>
+          ) : (
+            <div className="space-y-3">
+              {sessions.map((session) => (
+                <div
+                  key={session.id}
                   className={cn(
-                    "flex-1 min-w-0 max-h-32 rounded-md bg-background p-3 font-mono text-xs border shadow-sm min-h-[3rem] flex items-center overflow-y-auto",
-                    showKey ? "break-all" : "truncate whitespace-nowrap"
+                    "flex items-start justify-between rounded-lg border p-3",
+                    session.isCurrent && "border-emerald-500 bg-emerald-50/50 dark:bg-emerald-900/10"
                   )}
                 >
-                  {showKey ? identityKey : identityKeyPreview}
+                  <div className="flex items-start gap-3">
+                    <Monitor className="mt-0.5 h-4 w-4 text-muted-foreground" />
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium">
+                          {parseDeviceInfo(session.deviceInfo)}
+                        </span>
+                        {session.isCurrent && (
+                          <Badge variant="outline" className="text-[10px]">
+                            Current
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {session.ipAddress ?? "Unknown IP"} &bull; Created {formatRelativeTime(session.createdAt)}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Last active {formatRelativeTime(session.lastActiveAt)}
+                      </p>
+                    </div>
+                  </div>
+                  {!session.isCurrent && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-destructive hover:text-destructive"
+                      onClick={() => handleInvalidateSession(session.id)}
+                      disabled={invalidatingSessionId === session.id}
+                      title="Log out this session"
+                    >
+                      <LogOut className="h-4 w-4" />
+                    </Button>
+                  )}
                 </div>
-                <div className="flex flex-col gap-1">
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="h-9 w-9 bg-background shadow-sm"
-                    onClick={() => setShowKey(!showKey)}
-                    title={showKey ? "Hide full key" : "View full key"}
-                  >
-                    {showKey ? (
-                      <EyeOff className="h-4 w-4" />
-                    ) : (
-                      <Eye className="h-4 w-4" />
-                    )}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className="h-9 w-9 bg-background shadow-sm"
-                    onClick={() => navigator.clipboard.writeText(identityKey)}
-                    title="Copy key"
-                  >
-                    <Copy className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-              <p className="mt-2 text-[10px] text-muted-foreground">
-                Base64 length: {identityKey.length || 0} chars
-              </p>
-              <p className="mt-3 text-[10px] text-muted-foreground">
-                This key publicly identifies you on the network. Friends can verify your identity by comparing this fingerprint.
-              </p>
+              ))}
             </div>
+          )}
 
-            <div className="rounded-lg border bg-muted/50 p-4">
-              <div className="mb-3 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Lock className="h-4 w-4 text-sky-600" />
-                  <span className="font-semibold text-sm">Transport Key</span>
-                </div>
-                <Badge variant="outline" className="text-[10px] font-mono">ML-KEM-768</Badge>
+          {sessions.length > 1 && (
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={handleInvalidateAllOther}
+            >
+              Log out all other sessions
+            </Button>
+          )}
+        </div>
+      </div>
+    ),
+    security: (
+      <div className="space-y-6 py-4">
+        <div className="space-y-1">
+          <h3 className="text-sm font-medium">Keys</h3>
+          <p className="text-xs text-muted-foreground">
+            Cryptographic keys that secure your identity and messages.
+          </p>
+        </div>
+        <div className="space-y-4">
+          <div className="rounded-lg border bg-muted/50 p-4">
+            <div className="mb-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Fingerprint className="h-4 w-4 text-emerald-600" />
+                <span className="font-semibold text-sm">Identity Key</span>
               </div>
-              <p className="text-[10px] text-muted-foreground">
-                Used to decrypt incoming payloads. Rotating will update your other signed-in devices.
-              </p>
-              <div className="mt-3 flex items-center justify-between">
+              <Badge variant="outline" className="text-[10px] font-mono">ML-DSA-65</Badge>
+            </div>
+            <div className="flex items-start gap-2">
+              <div
+                className={cn(
+                  "flex-1 min-w-0 max-h-32 rounded-md bg-background p-3 font-mono text-xs border shadow-sm min-h-[3rem] flex items-center overflow-y-auto",
+                  showKey ? "break-all" : "truncate whitespace-nowrap"
+                )}
+              >
+                {showKey ? identityKey : identityKeyPreview}
+              </div>
+              <div className="flex flex-col gap-1">
                 <Button
                   variant="outline"
-                  size="sm"
-                  onClick={handleRotateTransportKey}
-                  disabled={isRotatingTransportKey}
+                  size="icon"
+                  className="h-9 w-9 bg-background shadow-sm"
+                  onClick={() => setShowKey(!showKey)}
+                  title={showKey ? "Hide full key" : "View full key"}
                 >
-                  {isRotatingTransportKey ? "Rotating..." : "Rotate key"}
+                  {showKey ? (
+                    <EyeOff className="h-4 w-4" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-9 w-9 bg-background shadow-sm"
+                  onClick={() => navigator.clipboard.writeText(identityKey)}
+                  title="Copy key"
+                >
+                  <Copy className="h-4 w-4" />
                 </Button>
               </div>
-              <p className="mt-2 text-[10px] text-muted-foreground">
-                Last rotated{" "}
-                {loadingTransportRotatedAt ? "Loading..." : formatTimestamp(transportRotatedAt)}
-              </p>
-              {rotateTransportError ? (
-                <p className="mt-2 text-[10px] text-destructive">{rotateTransportError}</p>
-              ) : null}
             </div>
+            <p className="mt-2 text-[10px] text-muted-foreground">
+              Base64 length: {identityKey.length || 0} chars
+            </p>
+            <p className="mt-3 text-[10px] text-muted-foreground">
+              This key publicly identifies you on the network. Friends can verify your identity by comparing this fingerprint.
+            </p>
+          </div>
 
-            <div className="flex items-start gap-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-900/30 dark:bg-emerald-900/10">
-              <Shield className="mt-0.5 h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-              <div className="space-y-1">
-                <p className="text-xs font-medium text-emerald-900 dark:text-emerald-100">Zero Knowledge</p>
-                <p className="text-[10px] text-emerald-700 dark:text-emerald-300">
-                  Your private keys never leave your device. The server cannot decrypt your messages.
-                </p>
+          <div className="rounded-lg border bg-muted/50 p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Lock className="h-4 w-4 text-sky-600" />
+                <span className="font-semibold text-sm">Transport Key</span>
               </div>
+              <Badge variant="outline" className="text-[10px] font-mono">ML-KEM-768</Badge>
             </div>
+            <p className="text-[10px] text-muted-foreground">
+              Used to decrypt incoming payloads. Rotating will update your other signed-in devices.
+            </p>
+            <div className="mt-3 flex items-center justify-between">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleRotateTransportKey}
+                disabled={isRotatingTransportKey}
+              >
+                {isRotatingTransportKey ? "Rotating..." : "Rotate key"}
+              </Button>
+            </div>
+            <p className="mt-2 text-[10px] text-muted-foreground">
+              Last rotated{" "}
+              {loadingTransportRotatedAt ? "Loading..." : formatTimestamp(transportRotatedAt)}
+            </p>
+            {rotateTransportError ? (
+              <p className="mt-2 text-[10px] text-destructive">{rotateTransportError}</p>
+            ) : null}
+          </div>
+        </div>
 
-            <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4">
-              <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-900/30 dark:bg-emerald-900/10">
+          <Shield className="mt-0.5 h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+          <div className="space-y-1">
+            <p className="text-xs font-medium text-emerald-900 dark:text-emerald-100">Zero Knowledge</p>
+            <p className="text-[10px] text-emerald-700 dark:text-emerald-300">
+              Your private keys never leave your device. The server cannot decrypt your messages.
+            </p>
+          </div>
+        </div>
+
+        <Separator />
+
+        <div className="space-y-2">
+          <h3 className="text-sm font-medium text-destructive">Danger zone</h3>
+          <p className="text-xs text-muted-foreground">
+            Permanent actions that remove data from the server.
+          </p>
+        </div>
+        <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="space-y-1">
+              <p className="text-sm font-semibold text-destructive">Delete account</p>
+              <p className="text-xs text-muted-foreground">
+                Permanently remove your account and server-stored encrypted data. This cannot be undone.
+              </p>
+            </div>
+            <Button
+              variant="destructive"
+              className="shrink-0"
+              disabled={!isDeleteMatch || isDeleting}
+              onClick={handleDeleteAccount}
+            >
+              {isDeleting ? "Deleting..." : "Delete"}
+            </Button>
+          </div>
+          <div className="mt-3 space-y-2">
+            <Label htmlFor="delete-confirm" className="text-xs">
+              Type your handle to confirm
+            </Label>
+            <Input
+              id="delete-confirm"
+              value={deleteConfirm}
+              placeholder={deleteLabel || "user@host"}
+              onChange={(event) => {
+                setDeleteConfirm(event.target.value)
+                setDeleteError(null)
+              }}
+            />
+            {deleteError ? (
+              <p className="text-xs text-destructive">{deleteError}</p>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    ),
+    blocking: (
+      <div className="space-y-6 py-4">
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <h3 className="text-sm font-medium flex items-center gap-2">
+              <User className="h-4 w-4" />
+              Blocked Users
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Messages from blocked users won&apos;t appear in your chats.
+            </p>
+          </div>
+
+          {blockedUsers.length === 0 ? (
+            <p className="text-sm text-muted-foreground italic">No blocked users</p>
+          ) : (
+            <div className="space-y-2">
+              {blockedUsers.map((handle) => (
+                <div
+                  key={handle}
+                  className="flex items-center justify-between rounded-lg border p-2"
+                >
+                  <span className="text-sm font-mono">{handle}</span>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                    onClick={() => unblockUser(handle)}
+                    title="Unblock user"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            <Input
+              value={newBlockedUser}
+              onChange={(e) => setNewBlockedUser(e.target.value)}
+              placeholder="user@server.com"
+              className="flex-1"
+              onKeyDown={(e) => e.key === "Enter" && handleBlockUser()}
+            />
+            <Button variant="outline" size="sm" onClick={handleBlockUser}>
+              <Ban className="h-4 w-4 mr-1" />
+              Block
+            </Button>
+          </div>
+        </div>
+
+        <Separator />
+
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <h3 className="text-sm font-medium flex items-center gap-2">
+              <Server className="h-4 w-4" />
+              Blocked Servers
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              All users from blocked servers won&apos;t appear in your chats.
+            </p>
+          </div>
+
+          {blockedServers.length === 0 ? (
+            <p className="text-sm text-muted-foreground italic">No blocked servers</p>
+          ) : (
+            <div className="space-y-2">
+              {blockedServers.map((server) => (
+                <div
+                  key={server}
+                  className="flex items-center justify-between rounded-lg border p-2"
+                >
+                  <span className="text-sm font-mono">@{server}</span>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                    onClick={() => unblockServer(server)}
+                    title="Unblock server"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            <Input
+              value={newBlockedServer}
+              onChange={(e) => setNewBlockedServer(e.target.value)}
+              placeholder="server.com"
+              className="flex-1"
+              onKeyDown={(e) => e.key === "Enter" && handleBlockServer()}
+            />
+            <Button variant="outline" size="sm" onClick={handleBlockServer}>
+              <Ban className="h-4 w-4 mr-1" />
+              Block
+            </Button>
+          </div>
+        </div>
+
+        {blockError ? (
+          <p className="text-sm text-destructive">{blockError}</p>
+        ) : null}
+
+        <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-900/30 dark:bg-amber-900/10">
+          <Shield className="mt-0.5 h-4 w-4 text-amber-600 dark:text-amber-400" />
+          <div className="space-y-1">
+            <p className="text-xs font-medium text-amber-900 dark:text-amber-100">Encrypted Block List</p>
+            <p className="text-[10px] text-amber-700 dark:text-amber-300">
+              Your block list is encrypted locally. The server cannot see who you&apos;ve blocked.
+            </p>
+          </div>
+        </div>
+      </div>
+    ),
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-[640px] max-h-[85vh] grid-rows-[auto_auto_1fr] overflow-hidden">
+        <DialogHeader className="space-y-3">
+          <DialogTitle className="sr-only">Settings</DialogTitle>
+          <Breadcrumb>
+            <BreadcrumbList className="text-base sm:text-xl font-medium">
+              <BreadcrumbItem>
+                {activePage ? (
+                  <BreadcrumbLink asChild>
+                    <button
+                      type="button"
+                      onClick={() => setActivePage(null)}
+                      className="text-base sm:text-xl"
+                    >
+                      Settings
+                    </button>
+                  </BreadcrumbLink>
+                ) : (
+                  <BreadcrumbPage>Settings</BreadcrumbPage>
+                )}
+              </BreadcrumbItem>
+              {activePage && activePageInfo ? (
+                <>
+                  <BreadcrumbSeparator />
+                  <BreadcrumbItem>
+                    <BreadcrumbPage>{activePageInfo.title}</BreadcrumbPage>
+                  </BreadcrumbItem>
+                </>
+              ) : null}
+            </BreadcrumbList>
+          </Breadcrumb>
+          <DialogDescription>{dialogDescription}</DialogDescription>
+        </DialogHeader>
+        <Separator />
+        <div className="min-h-0">
+          {activePage ? (
+            <ScrollArea className="h-full w-full">
+              {settingsPageContent[activePage]}
+            </ScrollArea>
+          ) : (
+            <ScrollArea className="h-full w-full">
+              <div className="space-y-4 py-4">
                 <div className="space-y-1">
-                  <p className="text-sm font-semibold text-destructive">Delete account</p>
+                  <h3 className="text-sm font-medium">Subsettings</h3>
                   <p className="text-xs text-muted-foreground">
-                    Permanently remove your account and server-stored encrypted data. This cannot be undone.
+                    Choose a section to configure.
                   </p>
                 </div>
-                <Button
-                  variant="destructive"
-                  className="shrink-0"
-                  disabled={!isDeleteMatch || isDeleting}
-                  onClick={handleDeleteAccount}
-                >
-                  {isDeleting ? "Deleting..." : "Delete"}
-                </Button>
+                <div className="grid gap-3">
+                  {settingsPages.map((page) => {
+                    const Icon = page.icon
+                    return (
+                      <button
+                        key={page.id}
+                        type="button"
+                        onClick={() => setActivePage(page.id)}
+                        className="group w-full rounded-lg border p-4 text-left transition hover:border-foreground/20 hover:bg-muted/50"
+                      >
+                        <div className="flex items-start gap-3">
+                          <span className="mt-0.5 rounded-md border bg-background p-2 text-muted-foreground transition group-hover:text-foreground">
+                            <Icon className="h-4 w-4" />
+                          </span>
+                          <div className="flex-1 space-y-1">
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="text-sm font-semibold">{page.title}</span>
+                              <ChevronRight className="h-4 w-4 text-muted-foreground transition group-hover:text-foreground" />
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              {page.description}
+                            </p>
+                          </div>
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
-              <div className="mt-3 space-y-2">
-                <Label htmlFor="delete-confirm" className="text-xs">
-                  Type your handle to confirm
-                </Label>
-                <Input
-                  id="delete-confirm"
-                  value={deleteConfirm}
-                  placeholder={deleteLabel || "user@host"}
-                  onChange={(event) => {
-                    setDeleteConfirm(event.target.value)
-                    setDeleteError(null)
-                  }}
-                />
-                {deleteError ? (
-                  <p className="text-xs text-destructive">{deleteError}</p>
-                ) : null}
-              </div>
-            </div>
-            </TabsContent>
-          </div>
-        </Tabs>
+            </ScrollArea>
+          )}
+        </div>
       </DialogContent>
     </Dialog>
   )

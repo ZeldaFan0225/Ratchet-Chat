@@ -30,8 +30,19 @@ setInterval(() => {
 }, 60 * 1000);
 
 const getRpId = (): string => {
+  const candidate =
+    process.env.CLIENT_URL ??
+    process.env.CLIENT_ORIGIN ??
+    process.env.NEXT_PUBLIC_APP_URL ??
+    "";
+  if (candidate) {
+    try {
+      return new URL(candidate).hostname;
+    } catch {
+      return candidate.replace(/^https?:\/\//, "").split("/")[0].split(":")[0];
+    }
+  }
   const host = getServerHost();
-  // Extract hostname without port
   return host.split(":")[0];
 };
 
