@@ -141,9 +141,7 @@ export function DashboardLayout() {
   const lastCallEventKeyRef = React.useRef<string | null>(null)
   const handleVaultMessageSync = React.useCallback(
     async (messageId: string, action: "upsert" | "delete") => {
-      console.log("[SYNC DEBUG] handleVaultMessageSync called:", { messageId, action })
       if (!masterKey) {
-        console.log("[SYNC DEBUG] No masterKey, returning")
         return
       }
       if (action === "delete") {
@@ -153,35 +151,17 @@ export function DashboardLayout() {
         return
       }
       const record = await db.messages.get(messageId)
-      console.log("[SYNC DEBUG] Retrieved record from DB:", record ? {
-        id: record.id,
-        ownerId: record.ownerId,
-        senderId: record.senderId,
-        peerHandle: record.peerHandle,
-      } : null)
       if (!record) {
-        console.log("[SYNC DEBUG] No record found in DB")
         return
       }
       // For vault synced messages, peerHandle is more reliable than senderId
       // (especially for call events where direction doesn't match sender semantics)
-      const fallbackHandle = record.peerHandle ?? record.senderId
-      console.log("[SYNC DEBUG] Decoding with fallbackHandle:", fallbackHandle)
-      const decoded = await decodeMessageRecord(record, masterKey, fallbackHandle)
-      console.log("[SYNC DEBUG] Decoded message:", decoded ? {
-        id: decoded.id,
-        peerHandle: decoded.peerHandle,
-        direction: decoded.direction,
-        kind: decoded.kind,
-        text: decoded.text?.substring(0, 50),
-      } : null)
+      const decoded = await decodeMessageRecord(record, masterKey, record.peerHandle ?? record.senderId)
       if (!decoded) {
-        console.log("[SYNC DEBUG] Failed to decode message")
         return
       }
       setMessages((current) => {
         const index = current.findIndex((message) => message.id === decoded.id)
-        console.log("[SYNC DEBUG] Updating messages state, existing index:", index, "total messages:", current.length)
         if (index === -1) {
           return [...current, decoded]
         }
@@ -1387,13 +1367,6 @@ export function DashboardLayout() {
         setMessages((current) => [...current, decoded])
       }
 
-      console.log("[SYNC DEBUG] addCallEventMessage saving to vault:", {
-        message_id: recordId,
-        original_sender_handle: peerHandle,
-        eventType,
-        direction,
-        callType,
-      })
       try {
         await apiFetch("/messages/vault", {
           method: "POST",
@@ -1405,10 +1378,8 @@ export function DashboardLayout() {
             sender_signature_verified: true,
           },
         })
-        console.log("[SYNC DEBUG] addCallEventMessage vault save successful")
         await db.messages.update(recordId, { vaultSynced: true })
-      } catch (err) {
-        console.log("[SYNC DEBUG] addCallEventMessage vault save failed:", err)
+      } catch {
         // Best-effort: syncOutgoingVault will retry.
       }
     },

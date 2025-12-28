@@ -1271,10 +1271,8 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
       }
     }
     socket.on("connect", () => {
-      console.log("[SYNC DEBUG] Socket connected, id:", socket.id)
     })
-    socket.on("connect_error", (err) => {
-      console.log("[SYNC DEBUG] Socket connect_error:", err.message)
+    socket.on("connect_error", () => {
     })
     socket.on("INCOMING_MESSAGE", handler)
 
@@ -1288,19 +1286,11 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
       sender_signature_verified: boolean
       created_at: string
     }) => {
-      console.log("[SYNC DEBUG] OUTGOING_MESSAGE_SYNCED received:", {
-        message_id: payload?.message_id,
-        original_sender_handle: payload?.original_sender_handle,
-        owner_id: payload?.owner_id,
-        created_at: payload?.created_at,
-      })
       if (!payload?.message_id || !payload?.encrypted_blob || !payload?.iv) {
-        console.log("[SYNC DEBUG] Missing required fields, returning early")
         return
       }
       // Deduplication check
       if (processedIdsRef.current.has(payload.message_id)) {
-        console.log("[SYNC DEBUG] Duplicate message_id, skipping:", payload.message_id)
         return
       }
       processedIdsRef.current.add(payload.message_id)
@@ -1312,7 +1302,6 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
       // Check if message already exists locally
       const existing = await db.messages.get(payload.message_id)
       if (existing) {
-        console.log("[SYNC DEBUG] Message already exists locally:", payload.message_id)
         bumpLastSync()
         onVaultMessageSynced?.(payload.message_id, "upsert")
         return
@@ -1321,7 +1310,7 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
       const ownerId = payload.owner_id ?? user?.id ?? user?.handle ?? ""
       // Use original_sender_handle for both senderId and peerHandle to match syncVault behavior
       // This ensures consistent decoding for both regular messages and call events
-      const recordToStore = {
+      await db.messages.put({
         id: payload.message_id,
         ownerId,
         senderId: payload.original_sender_handle,
@@ -1334,15 +1323,7 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
         isRead: true, // Our own messages are always read
         vaultSynced: true,
         createdAt: payload.created_at,
-      }
-      console.log("[SYNC DEBUG] Storing message to IndexedDB:", {
-        id: recordToStore.id,
-        ownerId: recordToStore.ownerId,
-        senderId: recordToStore.senderId,
-        peerHandle: recordToStore.peerHandle,
       })
-      await db.messages.put(recordToStore)
-      console.log("[SYNC DEBUG] Message stored, calling onVaultMessageSynced")
       bumpLastSync()
       onVaultMessageSynced?.(payload.message_id, "upsert")
     }

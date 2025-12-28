@@ -147,11 +147,6 @@ io.on("connection", (socket) => {
     return;
   }
   socket.join(user.id);
-  console.log("[SYNC DEBUG SERVER] Socket connected and joined room:", {
-    socketId: socket.id,
-    usernameId: user.id,
-    username: user.username,
-  });
 
   socket.on("signal", async (data) => {
     const user = socket.data.user as AuthenticatedUser | undefined;
