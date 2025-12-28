@@ -583,12 +583,13 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
 
       logCall("info", `Sending call message: ${callAction}`, { callId, peerHandle })
 
+      const messageId = crypto.randomUUID()
       const response = await apiFetch<{ id?: string }>("/messages/send", {
         method: "POST",
         body: {
           recipient_handle: peerHandle,
           encrypted_blob: encryptedBlob,
-          message_id: callId,
+          message_id: messageId,
         },
       })
 

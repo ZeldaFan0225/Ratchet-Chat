@@ -149,12 +149,17 @@ export function useWebRTC(config: UseWebRTCConfig) {
             logRTC("Remote video track ended", { trackId: event.track.id })
             setRemoteVideoTracks(prev => prev.filter(t => t.id !== event.track.id))
           }
-          // Also listen for mute (some browsers use this instead of ended)
+          // Also listen for mute/unmute (e.g., screen share stop or camera off)
           event.track.onmute = () => {
             logRTC("Remote video track muted", { trackId: event.track.id, readyState: event.track.readyState })
-            if (event.track.readyState === "ended") {
-              setRemoteVideoTracks(prev => prev.filter(t => t.id !== event.track.id))
-            }
+            setRemoteVideoTracks(prev => prev.filter(t => t.id !== event.track.id))
+          }
+          event.track.onunmute = () => {
+            logRTC("Remote video track unmuted", { trackId: event.track.id })
+            setRemoteVideoTracks(prev => {
+              if (prev.some(t => t.id === event.track.id)) return prev
+              return [...prev, event.track]
+            })
           }
         }
 
@@ -345,7 +350,10 @@ export function useWebRTC(config: UseWebRTCConfig) {
     }
 
     const pc = peerConnectionRef.current
-    if (pc && localStreamRef.current) {
+    if (pc && screenSenderRef.current) {
+      await screenSenderRef.current.replaceTrack(screenTrack)
+      logRTC("Replaced screen share track on existing sender")
+    } else if (pc && localStreamRef.current) {
       // Add screen track as a NEW track (don't replace camera)
       // This allows remote to see both camera and screen share
       const sender = pc.addTrack(screenTrack, localStreamRef.current)
@@ -361,12 +369,10 @@ export function useWebRTC(config: UseWebRTCConfig) {
   const stopScreenShare = useCallback(async () => {
     logRTC("Stopping screen share")
 
-    // Remove screen track from peer connection
-    const pc = peerConnectionRef.current
-    if (pc && screenSenderRef.current) {
-      pc.removeTrack(screenSenderRef.current)
-      screenSenderRef.current = null
-      logRTC("Removed screen track from peer connection")
+    // Detach screen track but keep the sender to avoid m-section mismatch on renegotiation
+    if (screenSenderRef.current) {
+      await screenSenderRef.current.replaceTrack(null)
+      logRTC("Detached screen track from peer connection")
     }
 
     // Stop screen stream tracks

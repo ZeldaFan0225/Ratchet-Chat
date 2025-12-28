@@ -675,6 +675,7 @@ export function CallOverlay({
 
   return (
     <div className="fixed inset-0 z-[10000] bg-background/95 backdrop-blur-sm flex flex-col">
+      <audio ref={remoteAudioRef} autoPlay playsInline />
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b">
         <div className="flex items-center gap-3">
@@ -766,8 +767,6 @@ export function CallOverlay({
                   <AvatarFallback className="text-4xl">{initials}</AvatarFallback>
                 </Avatar>
                 <p className="text-muted-foreground">{getStatusText()}</p>
-                {/* Hidden audio for remote stream without video */}
-                {remoteStream && <audio ref={remoteAudioRef} autoPlay playsInline />}
               </div>
             )}
 
@@ -850,9 +849,6 @@ export function CallOverlay({
         ) : (
           /* Audio call or waiting for video */
           <div className="flex flex-col items-center gap-6">
-            {/* Hidden audio element for playback */}
-            <audio ref={remoteAudioRef} autoPlay playsInline />
-
             <Avatar className="size-32">
               <AvatarFallback className="text-4xl">{initials}</AvatarFallback>
             </Avatar>
