@@ -354,13 +354,22 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
         const senderHandle = item.sender_handle
         const inlineIdentityKey = payload.senderIdentityKey ?? payload.sender_identity_key
 
+        // Deduplicate call signaling messages
+        const callDedupeKey = `call:${item.id}`
+        if (processedIdsRef.current.has(callDedupeKey)) {
+          console.log("[RatchetSync] Ignoring duplicate call signaling", { id: item.id })
+          return
+        }
+        processedIdsRef.current.add(callDedupeKey)
+
         // Check if message is stale (older than 120 seconds)
         const messageTimestamp = payload.timestamp ? new Date(payload.timestamp).getTime() : 0
         const messageAge = Date.now() - messageTimestamp
 
         if (messageAge > CALL_SIGNALING_MAX_AGE_MS) {
-          console.log("[RatchetSync] Ignoring stale call signaling", {
+          console.warn("[RatchetSync] Ignoring stale call signaling", {
             call_action: payload.call_action,
+            call_id: payload.call_id,
             age_seconds: Math.floor(messageAge / 1000),
           })
           // ACK and discard without processing
@@ -374,6 +383,60 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
 
         // Route to CallContext for live signaling
         if (onCallMessage && senderHandle && inlineIdentityKey) {
+          // Verify signature before processing
+          const senderSignature = payload.sender_signature ?? payload.senderSignature
+          if (senderSignature) {
+            // Reconstruct the payload that was signed (without signature and identity key)
+            const unsignedPayload: Record<string, unknown> = {
+              type: "call",
+              call_type: payload.call_type ?? "AUDIO",
+              call_id: payload.call_id ?? "",
+              call_action: payload.call_action,
+              timestamp: payload.timestamp,
+            }
+            if (payload.sdp) unsignedPayload.sdp = payload.sdp
+            if (payload.candidate) unsignedPayload.candidate = payload.candidate
+
+            const signaturePayload = buildMessageSignaturePayload(
+              senderHandle,
+              JSON.stringify(unsignedPayload),
+              payload.call_id ?? ""
+            )
+            const signatureValid = verifySignature(
+              signaturePayload,
+              senderSignature,
+              inlineIdentityKey
+            )
+
+            if (!signatureValid) {
+              console.warn("[RatchetSync] Invalid signature on call signaling, rejecting", {
+                call_action: payload.call_action,
+                call_id: payload.call_id,
+                sender: senderHandle,
+              })
+              // ACK to remove from queue but don't process
+              try {
+                await apiFetch(`/messages/queue/${item.id}/ack`, { method: "POST" })
+              } catch {
+                // Best-effort ACK
+              }
+              return
+            }
+          } else {
+            console.warn("[RatchetSync] Call signaling missing signature, rejecting", {
+              call_action: payload.call_action,
+              call_id: payload.call_id,
+              sender: senderHandle,
+            })
+            // ACK to remove from queue but don't process
+            try {
+              await apiFetch(`/messages/queue/${item.id}/ack`, { method: "POST" })
+            } catch {
+              // Best-effort ACK
+            }
+            return
+          }
+
           const callPayload: CallMessagePayload = {
             type: "call",
             call_type: payload.call_type ?? "AUDIO",
@@ -381,7 +444,7 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
             call_action: payload.call_action,
             sdp: payload.sdp,
             candidate: payload.candidate,
-            sender_signature: payload.sender_signature ?? "",
+            sender_signature: senderSignature,
             sender_identity_key: inlineIdentityKey,
             timestamp: payload.timestamp ?? new Date().toISOString(),
           }
@@ -1208,8 +1271,10 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
       }
     }
     socket.on("connect", () => {
+      console.log("[SYNC DEBUG] Socket connected, id:", socket.id)
     })
     socket.on("connect_error", (err) => {
+      console.log("[SYNC DEBUG] Socket connect_error:", err.message)
     })
     socket.on("INCOMING_MESSAGE", handler)
 
@@ -1223,11 +1288,19 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
       sender_signature_verified: boolean
       created_at: string
     }) => {
+      console.log("[SYNC DEBUG] OUTGOING_MESSAGE_SYNCED received:", {
+        message_id: payload?.message_id,
+        original_sender_handle: payload?.original_sender_handle,
+        owner_id: payload?.owner_id,
+        created_at: payload?.created_at,
+      })
       if (!payload?.message_id || !payload?.encrypted_blob || !payload?.iv) {
+        console.log("[SYNC DEBUG] Missing required fields, returning early")
         return
       }
       // Deduplication check
       if (processedIdsRef.current.has(payload.message_id)) {
+        console.log("[SYNC DEBUG] Duplicate message_id, skipping:", payload.message_id)
         return
       }
       processedIdsRef.current.add(payload.message_id)
@@ -1239,17 +1312,20 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
       // Check if message already exists locally
       const existing = await db.messages.get(payload.message_id)
       if (existing) {
+        console.log("[SYNC DEBUG] Message already exists locally:", payload.message_id)
         bumpLastSync()
         onVaultMessageSynced?.(payload.message_id, "upsert")
         return
       }
       // Store the outgoing message from another device
       const ownerId = payload.owner_id ?? user?.id ?? user?.handle ?? ""
-      await db.messages.put({
+      // Use original_sender_handle for both senderId and peerHandle to match syncVault behavior
+      // This ensures consistent decoding for both regular messages and call events
+      const recordToStore = {
         id: payload.message_id,
         ownerId,
-        senderId: ownerId, // It's our own message
-        peerHandle: payload.original_sender_handle, // Outgoing: peer is recipient
+        senderId: payload.original_sender_handle,
+        peerHandle: payload.original_sender_handle,
         content: JSON.stringify({
           encrypted_blob: payload.encrypted_blob,
           iv: payload.iv,
@@ -1258,7 +1334,15 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
         isRead: true, // Our own messages are always read
         vaultSynced: true,
         createdAt: payload.created_at,
+      }
+      console.log("[SYNC DEBUG] Storing message to IndexedDB:", {
+        id: recordToStore.id,
+        ownerId: recordToStore.ownerId,
+        senderId: recordToStore.senderId,
+        peerHandle: recordToStore.peerHandle,
       })
+      await db.messages.put(recordToStore)
+      console.log("[SYNC DEBUG] Message stored, calling onVaultMessageSynced")
       bumpLastSync()
       onVaultMessageSynced?.(payload.message_id, "upsert")
     }

@@ -1200,6 +1200,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
 
       pendingOfferRef.current = null
       pendingIceCandidatesRef.current = []
+      isRenegotiatingRef.current = false
       setCallState(initialCallState)
     },
     [callState, sendCallMessage, emitSessionClaim, sendSessionClaimToSelf]
@@ -1251,6 +1252,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       }
 
       pendingIceCandidatesRef.current = []
+      isRenegotiatingRef.current = false
       closeWebRTC()
       setLocalStream(null)
       setRemoteStream(null)
@@ -1270,6 +1272,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     }
     pendingOfferRef.current = null
     pendingIceCandidatesRef.current = []
+    isRenegotiatingRef.current = false
     setCallState({ ...initialCallState, suppressNotifications: true })
   }, [])
 

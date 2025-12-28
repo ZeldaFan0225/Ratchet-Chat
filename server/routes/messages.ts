@@ -649,6 +649,14 @@ export const createMessagesRouter = (
       created_at: entry.created_at,
     });
 
+    const roomSockets = io.sockets.adapter.rooms.get(req.user!.id);
+    console.log("[SYNC DEBUG SERVER] Emitting OUTGOING_MESSAGE_SYNCED to room:", req.user!.id, {
+      message_id: entry.id,
+      owner_id: entry.owner_id,
+      original_sender_handle: entry.original_sender_handle,
+      socketsInRoom: roomSockets ? Array.from(roomSockets) : [],
+      socketCount: roomSockets?.size ?? 0,
+    });
     io.to(req.user!.id).emit("OUTGOING_MESSAGE_SYNCED", {
       message_id: entry.id,
       owner_id: entry.owner_id,
