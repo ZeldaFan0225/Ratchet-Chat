@@ -57,6 +57,28 @@ import {
   REACTION_PICKER_OFFSET,
 } from "@/lib/messageUtils"
 
+const MS_PER_DAY = 24 * 60 * 60 * 1000
+
+const getMessageDateKey = (date: Date) => {
+  if (Number.isNaN(date.valueOf())) return ""
+  return date.toDateString()
+}
+
+const formatMessageDateLabel = (date: Date, now: Date) => {
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate())
+  const diffDays = Math.round((startOfToday.getTime() - startOfDate.getTime()) / MS_PER_DAY)
+  if (diffDays === 0) return "Today"
+  if (diffDays === 1) return "Yesterday"
+  const includeYear = date.getFullYear() !== now.getFullYear()
+  return date.toLocaleDateString([], {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    ...(includeYear ? { year: "numeric" } : {}),
+  })
+}
+
 export function DashboardLayout() {
   const LAST_SELECTED_CHAT_KEY = "lastSelectedChat"
   const {
@@ -437,6 +459,31 @@ export function DashboardLayout() {
     const lower = chatSearchQuery.toLowerCase()
     return activeMessagesRaw.filter((msg) => msg.text.toLowerCase().includes(lower))
   }, [activeMessagesRaw, chatSearchQuery])
+
+  const activeMessageItems = React.useMemo(() => {
+    const items: Array<
+      | { type: "date"; key: string; label: string }
+      | { type: "message"; message: StoredMessage }
+    > = []
+    let lastDateKey = ""
+    const today = new Date()
+
+    for (const message of activeMessages) {
+      const parsed = new Date(message.timestamp)
+      const dateKey = getMessageDateKey(parsed)
+      if (dateKey && dateKey !== lastDateKey) {
+        items.push({
+          type: "date",
+          key: dateKey,
+          label: formatMessageDateLabel(parsed, today),
+        })
+        lastDateKey = dateKey
+      }
+      items.push({ type: "message", message })
+    }
+
+    return items
+  }, [activeMessages])
 
   const activeMessageLookup = React.useMemo(() => {
     const map = new Map<string, StoredMessage>()
@@ -2296,15 +2343,15 @@ export function DashboardLayout() {
           onDragLeave={handleDragLeave}
           onDrop={handleDropAttachment}
         >
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_var(--chat-glow),_transparent_55%)] -z-10" />
-          <div className="pointer-events-none absolute inset-0 opacity-40 bg-[linear-gradient(90deg,var(--chat-grid)_1px,transparent_1px),linear-gradient(0deg,var(--chat-grid)_1px,transparent_1px)] bg-[size:32px_32px] -z-10" />
+          <div className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(circle_at_top,_var(--chat-glow),_transparent_55%)]" />
+          <div className="pointer-events-none absolute inset-0 z-0 opacity-40 bg-[linear-gradient(90deg,var(--chat-grid)_1px,transparent_1px),linear-gradient(0deg,var(--chat-grid)_1px,transparent_1px)] bg-[size:32px_32px]" />
           {isDragOver ? (
             <div className="pointer-events-none absolute inset-4 z-20 flex items-center justify-center rounded-2xl border-2 border-dashed border-emerald-300 bg-emerald-50/80 text-sm font-medium text-emerald-700 shadow-lg dark:border-emerald-400/50 dark:bg-emerald-900/40 dark:text-emerald-100">
               Drop file to attach
             </div>
           ) : null}
-          <ScrollArea className="h-full relative z-10">
-            <div className="mx-auto flex w-full max-w-none flex-col gap-2 px-4 py-4">
+          <ScrollArea className="relative z-10 h-full">
+            <div className="relative z-10 mx-auto flex w-full max-w-none flex-col gap-2 px-4 py-4">
               {!activeContact ? (
                 <div className="flex min-h-[60vh] items-center justify-center px-4 py-8">
                   <div className="w-full max-w-md rounded-2xl border bg-card/80 p-6 text-center shadow-sm">
@@ -2344,7 +2391,20 @@ export function DashboardLayout() {
                       </div>
                     </div>
                   )}
-                  {activeMessages.map((message) => {
+                  {activeMessageItems.map((item) => {
+                    if (item.type === "date") {
+                      return (
+                        <div key={`date-${item.key}`} className="flex w-full items-center gap-3 py-3">
+                          <div className="h-px flex-1 bg-border/70" />
+                          <div className="rounded-full border border-border bg-muted px-4 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground shadow-sm backdrop-blur-sm">
+                            {item.label}
+                          </div>
+                          <div className="h-px flex-1 bg-border/70" />
+                        </div>
+                      )
+                    }
+
+                    const message = item.message
                     if (message.kind === "call" && message.callEventType && message.callType) {
                       return (
                         <CallNotice

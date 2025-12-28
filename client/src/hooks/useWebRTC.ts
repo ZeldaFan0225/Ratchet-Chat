@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react"
-import { getMediaStream, getMediaStreamWithOptionalVideo, stopMediaStream } from "@/lib/webrtc"
+import { getMediaStream, getMediaStreamWithOptionalVideo, getDisplayMedia, stopMediaStream, setVideoBitrate, applyFramerateConstraint } from "@/lib/webrtc"
 
 function logRTC(message: string, data?: Record<string, unknown>): void {
   const timestamp = new Date().toISOString()
@@ -31,6 +31,7 @@ type UseWebRTCConfig = {
   onConnectionStateChange?: (state: ConnectionState) => void
   onIceCandidate?: (candidate: RTCIceCandidate) => void
   onIceGatheringComplete?: () => void
+  onNegotiationNeeded?: () => void
 }
 
 export function useWebRTC(config: UseWebRTCConfig) {
@@ -40,14 +41,22 @@ export function useWebRTC(config: UseWebRTCConfig) {
     onConnectionStateChange,
     onIceCandidate,
     onIceGatheringComplete,
+    onNegotiationNeeded,
   } = config
 
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null)
   const localStreamRef = useRef<MediaStream | null>(null)
   const remoteStreamRef = useRef<MediaStream | null>(null)
+  const screenStreamRef = useRef<MediaStream | null>(null)
+  const videoSenderRef = useRef<RTCRtpSender | null>(null)
+  const screenSenderRef = useRef<RTCRtpSender | null>(null)
+  const cameraTrackRef = useRef<MediaStreamTrack | null>(null)
   const pendingCandidatesRef = useRef<RTCIceCandidate[]>([])
   const [connectionState, setConnectionState] = useState<ConnectionState>("new")
+  const [isScreenSharing, setIsScreenSharing] = useState(false)
   const lastConnectionStateRef = useRef<ConnectionState>("new")
+  // Track remote video tracks separately (camera vs screen share)
+  const [remoteVideoTracks, setRemoteVideoTracks] = useState<MediaStreamTrack[]>([])
 
   const createPeerConnection = useCallback(() => {
     if (peerConnectionRef.current) {
@@ -109,17 +118,56 @@ export function useWebRTC(config: UseWebRTCConfig) {
         lastConnectionStateRef.current = state
         setConnectionState(state)
         onConnectionStateChange?.(state)
+        // Apply bitrate settings when connected for better quality
+        if (state === "connected") {
+          void setVideoBitrate(pc, 2500).catch(() => {
+            // Bitrate setting is best-effort
+          })
+        }
       }
     }
 
     pc.ontrack = (event) => {
       logRTC("Remote track received", {
         kind: event.track.kind,
-        streamCount: event.streams?.length
+        streamCount: event.streams?.length,
+        trackLabel: event.track.label,
       })
       if (event.streams && event.streams[0]) {
-        remoteStreamRef.current = event.streams[0]
-        onRemoteStream?.(event.streams[0])
+        const stream = event.streams[0]
+        remoteStreamRef.current = stream
+
+        // Track video tracks for multi-video display (camera + screen share)
+        if (event.track.kind === "video") {
+          setRemoteVideoTracks(prev => {
+            // Avoid duplicates
+            if (prev.some(t => t.id === event.track.id)) return prev
+            return [...prev, event.track]
+          })
+          // Clean up when track ends
+          event.track.onended = () => {
+            logRTC("Remote video track ended", { trackId: event.track.id })
+            setRemoteVideoTracks(prev => prev.filter(t => t.id !== event.track.id))
+          }
+          // Also listen for mute (some browsers use this instead of ended)
+          event.track.onmute = () => {
+            logRTC("Remote video track muted", { trackId: event.track.id, readyState: event.track.readyState })
+            if (event.track.readyState === "ended") {
+              setRemoteVideoTracks(prev => prev.filter(t => t.id !== event.track.id))
+            }
+          }
+        }
+
+        // Listen for track removal from stream (handles removeTrack on sender side)
+        stream.onremovetrack = (e) => {
+          logRTC("Track removed from remote stream", { kind: e.track.kind, trackId: e.track.id })
+          if (e.track.kind === "video") {
+            setRemoteVideoTracks(prev => prev.filter(t => t.id !== e.track.id))
+          }
+          onRemoteStream?.(stream)
+        }
+
+        onRemoteStream?.(stream)
         if (lastConnectionStateRef.current !== "connected") {
           logRTC("Marking connection as connected from remote track")
           lastConnectionStateRef.current = "connected"
@@ -129,9 +177,14 @@ export function useWebRTC(config: UseWebRTCConfig) {
       }
     }
 
+    pc.onnegotiationneeded = () => {
+      logRTC("Negotiation needed")
+      onNegotiationNeeded?.()
+    }
+
     peerConnectionRef.current = pc
     return pc
-  }, [iceServers, onIceCandidate, onIceGatheringComplete, onConnectionStateChange, onRemoteStream])
+  }, [iceServers, onIceCandidate, onIceGatheringComplete, onConnectionStateChange, onRemoteStream, onNegotiationNeeded])
 
   const getUserMedia = useCallback(
     async (audio: boolean, video: boolean): Promise<MediaStream> => {
@@ -159,7 +212,12 @@ export function useWebRTC(config: UseWebRTCConfig) {
     logRTC("Adding local stream", { trackCount: stream.getTracks().length })
     stream.getTracks().forEach((track) => {
       logRTC("Adding track", { kind: track.kind, id: track.id })
-      pc.addTrack(track, stream)
+      const sender = pc.addTrack(track, stream)
+      // Store video sender reference for screen sharing
+      if (track.kind === "video") {
+        videoSenderRef.current = sender
+        cameraTrackRef.current = track
+      }
     })
     localStreamRef.current = stream
   }, [createPeerConnection])
@@ -233,10 +291,30 @@ export function useWebRTC(config: UseWebRTCConfig) {
   }, [])
 
   const setMuted = useCallback((muted: boolean) => {
+    logRTC("Setting muted", { muted })
+
+    // Mute via local stream
     const stream = localStreamRef.current
     if (stream) {
-      stream.getAudioTracks().forEach((track) => {
+      const audioTracks = stream.getAudioTracks()
+      logRTC("Muting local stream audio tracks", { count: audioTracks.length })
+      audioTracks.forEach((track) => {
         track.enabled = !muted
+        logRTC("Set track enabled", { trackId: track.id, enabled: track.enabled })
+      })
+    } else {
+      logRTC("Warning: No local stream to mute")
+    }
+
+    // Also mute via peer connection senders (more reliable)
+    const pc = peerConnectionRef.current
+    if (pc) {
+      const senders = pc.getSenders()
+      senders.forEach((sender) => {
+        if (sender.track?.kind === "audio") {
+          sender.track.enabled = !muted
+          logRTC("Set sender track enabled", { trackId: sender.track.id, enabled: sender.track.enabled })
+        }
       })
     }
   }, [])
@@ -250,11 +328,73 @@ export function useWebRTC(config: UseWebRTCConfig) {
     }
   }, [])
 
+  const startScreenShare = useCallback(async (readabilityMode: boolean = false): Promise<MediaStream> => {
+    logRTC("Starting screen share", { readabilityMode })
+
+    const screenStream = await getDisplayMedia(readabilityMode)
+    const screenTrack = screenStream.getVideoTracks()[0]
+
+    if (!screenTrack) {
+      throw new Error("No video track in screen share stream")
+    }
+
+    // Handle user stopping share via browser chrome
+    screenTrack.onended = () => {
+      logRTC("Screen share ended by user (browser chrome)")
+      void stopScreenShare()
+    }
+
+    const pc = peerConnectionRef.current
+    if (pc && localStreamRef.current) {
+      // Add screen track as a NEW track (don't replace camera)
+      // This allows remote to see both camera and screen share
+      const sender = pc.addTrack(screenTrack, localStreamRef.current)
+      screenSenderRef.current = sender
+      logRTC("Added screen track alongside camera")
+    }
+
+    screenStreamRef.current = screenStream
+    setIsScreenSharing(true)
+    return screenStream
+  }, [])
+
+  const stopScreenShare = useCallback(async () => {
+    logRTC("Stopping screen share")
+
+    // Remove screen track from peer connection
+    const pc = peerConnectionRef.current
+    if (pc && screenSenderRef.current) {
+      pc.removeTrack(screenSenderRef.current)
+      screenSenderRef.current = null
+      logRTC("Removed screen track from peer connection")
+    }
+
+    // Stop screen stream tracks
+    if (screenStreamRef.current) {
+      stopMediaStream(screenStreamRef.current)
+      screenStreamRef.current = null
+    }
+
+    setIsScreenSharing(false)
+  }, [])
+
+  const setScreenShareReadabilityMode = useCallback(async (readabilityMode: boolean) => {
+    const screenTrack = screenStreamRef.current?.getVideoTracks()[0]
+    if (!screenTrack) {
+      logRTC("No screen track to apply readability mode to")
+      return
+    }
+
+    logRTC("Setting screen share readability mode", { readabilityMode })
+    await applyFramerateConstraint(screenTrack, readabilityMode)
+  }, [])
+
   const getPeerConnection = useCallback(() => peerConnectionRef.current, [])
 
   const close = useCallback(() => {
     stopMediaStream(localStreamRef.current)
     stopMediaStream(remoteStreamRef.current)
+    stopMediaStream(screenStreamRef.current)
 
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close()
@@ -263,15 +403,24 @@ export function useWebRTC(config: UseWebRTCConfig) {
 
     localStreamRef.current = null
     remoteStreamRef.current = null
+    screenStreamRef.current = null
+    videoSenderRef.current = null
+    screenSenderRef.current = null
+    cameraTrackRef.current = null
     pendingCandidatesRef.current = []
     lastConnectionStateRef.current = "closed"
     setConnectionState("closed")
+    setIsScreenSharing(false)
+    setRemoteVideoTracks([])
   }, [])
 
   return {
     connectionState,
     localStream: localStreamRef.current,
     remoteStream: remoteStreamRef.current,
+    screenStream: screenStreamRef.current,
+    remoteVideoTracks,
+    isScreenSharing,
     createPeerConnection,
     getUserMedia,
     getUserMediaWithOptionalVideo,
@@ -282,6 +431,9 @@ export function useWebRTC(config: UseWebRTCConfig) {
     addIceCandidate,
     setMuted,
     setCameraEnabled,
+    startScreenShare,
+    stopScreenShare,
+    setScreenShareReadabilityMode,
     getPeerConnection,
     close,
   }

@@ -12,15 +12,17 @@ export function ImagePreviewDialog({
   src,
   open,
   onOpenChange,
+  modal = false,
 }: {
   src: string | null
   open: boolean
   onOpenChange: (open: boolean) => void
+  modal?: boolean
 }) {
   if (!src) return null
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={onOpenChange} modal={modal}>
       <DialogContent className="w-screen h-screen max-w-none m-0 p-0 border-none bg-black/95 flex items-center justify-center translate-x-0 translate-y-0 top-0 left-0 data-[state=open]:slide-in-from-left-0 data-[state=open]:slide-in-from-top-0 rounded-none shadow-none">
         <VisuallyHidden>
           <DialogTitle>Image Preview</DialogTitle>

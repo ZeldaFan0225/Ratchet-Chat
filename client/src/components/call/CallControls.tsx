@@ -1,6 +1,6 @@
 "use client"
 
-import { PhoneOff, Mic, MicOff, Video, VideoOff, Volume2, VolumeX } from "lucide-react"
+import { PhoneOff, Mic, MicOff, Video, VideoOff, Volume2, VolumeX, MonitorUp, MonitorOff, ScanText } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
@@ -8,8 +8,12 @@ type CallControlsProps = {
   isMuted: boolean
   isCameraOn: boolean
   isVideoCall: boolean
+  isScreenSharing: boolean
+  isReadabilityMode: boolean
   onToggleMute: () => void
   onToggleCamera: () => void
+  onToggleScreenShare: () => void
+  onToggleReadabilityMode: () => void
   onEndCall: () => void
   remoteVolume?: number
   onRemoteVolumeChange?: (value: number) => void
@@ -19,8 +23,12 @@ export function CallControls({
   isMuted,
   isCameraOn,
   isVideoCall,
+  isScreenSharing,
+  isReadabilityMode,
   onToggleMute,
   onToggleCamera,
+  onToggleScreenShare,
+  onToggleReadabilityMode,
   onEndCall,
   remoteVolume,
   onRemoteVolumeChange,
@@ -56,6 +64,34 @@ export function CallControls({
             title={isCameraOn ? "Turn off camera" : "Turn on camera"}
           >
             {isCameraOn ? <Video className="size-5" /> : <VideoOff className="size-5" />}
+          </Button>
+        )}
+
+        <Button
+          variant="outline"
+          size="icon-lg"
+          onClick={onToggleScreenShare}
+          className={cn(
+            "rounded-full",
+            isScreenSharing && "bg-primary/20 border-primary text-primary hover:bg-primary/30"
+          )}
+          title={isScreenSharing ? "Stop sharing screen" : "Share screen"}
+        >
+          {isScreenSharing ? <MonitorOff className="size-5" /> : <MonitorUp className="size-5" />}
+        </Button>
+
+        {isScreenSharing && (
+          <Button
+            variant="outline"
+            size="icon-lg"
+            onClick={onToggleReadabilityMode}
+            className={cn(
+              "rounded-full",
+              isReadabilityMode && "bg-amber-500/20 border-amber-500 text-amber-600 hover:bg-amber-500/30"
+            )}
+            title={isReadabilityMode ? "Normal mode (30fps)" : "Readability mode (15fps, higher resolution)"}
+          >
+            <ScanText className="size-5" />
           </Button>
         )}
 

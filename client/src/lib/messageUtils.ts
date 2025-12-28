@@ -398,3 +398,14 @@ export function formatTimestamp(isoString: string) {
     return ""
   }
 }
+
+export function formatMessageTime(isoString: string) {
+  if (!isoString) return ""
+  try {
+    const date = new Date(isoString)
+    if (Number.isNaN(date.getTime())) return ""
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+  } catch {
+    return ""
+  }
+}

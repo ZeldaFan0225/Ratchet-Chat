@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useRef } from "react"
+import { createPortal } from "react-dom"
 import { useCall } from "@/context/CallContext"
 import { IncomingCallDialog } from "./IncomingCallDialog"
 import { CallOverlay } from "./CallOverlay"
@@ -10,18 +11,25 @@ export function CallManager() {
     callState,
     localStream,
     remoteStream,
+    remoteStreamVersion,
+    remoteVideoTracks,
     localAudioLevel,
     remoteAudioLevel,
     isMuted,
     isCameraOn,
+    isScreenSharing,
+    isReadabilityMode,
     answerCall,
     rejectCall,
     endCall,
     toggleMute,
     toggleCamera,
+    toggleScreenShare,
+    toggleReadabilityMode,
   } = useCall()
   const incomingAudioRef = useRef<HTMLAudioElement>(null)
   const outgoingAudioRef = useRef<HTMLAudioElement>(null)
+  const portalRoot = typeof document !== "undefined" ? document.body : null
 
   useEffect(() => {
     const incomingAudio = incomingAudioRef.current
@@ -81,25 +89,60 @@ export function CallManager() {
       />
 
       {/* Active call overlay */}
-      {callState.status !== "idle" && callState.status !== "incoming" && (
-        <CallOverlay
-          status={callState.status}
-          callType={callState.callType}
-          peerHandle={callState.peerHandle}
-          startedAt={callState.startedAt}
-          safetyNumber={callState.safetyNumber}
-          error={callState.error}
-          localStream={localStream}
-          remoteStream={remoteStream}
-          localAudioLevel={localAudioLevel}
-          remoteAudioLevel={remoteAudioLevel}
-          isMuted={isMuted}
-          isCameraOn={isCameraOn}
-          onToggleMute={toggleMute}
-          onToggleCamera={toggleCamera}
-          onEndCall={() => endCall()}
-        />
-      )}
+      {callState.status !== "idle" && callState.status !== "incoming"
+        ? portalRoot
+          ? createPortal(
+              <CallOverlay
+                status={callState.status}
+                callType={callState.callType}
+                peerHandle={callState.peerHandle}
+                startedAt={callState.startedAt}
+                safetyNumber={callState.safetyNumber}
+                error={callState.error}
+                localStream={localStream}
+                remoteStream={remoteStream}
+                remoteStreamVersion={remoteStreamVersion}
+                remoteVideoTracks={remoteVideoTracks}
+                localAudioLevel={localAudioLevel}
+                remoteAudioLevel={remoteAudioLevel}
+                isMuted={isMuted}
+                isCameraOn={isCameraOn}
+                isScreenSharing={isScreenSharing}
+                isReadabilityMode={isReadabilityMode}
+                onToggleMute={toggleMute}
+                onToggleCamera={toggleCamera}
+                onToggleScreenShare={toggleScreenShare}
+                onToggleReadabilityMode={toggleReadabilityMode}
+                onEndCall={() => endCall()}
+              />,
+              portalRoot
+            )
+          : (
+              <CallOverlay
+                status={callState.status}
+                callType={callState.callType}
+                peerHandle={callState.peerHandle}
+                startedAt={callState.startedAt}
+                safetyNumber={callState.safetyNumber}
+                error={callState.error}
+                localStream={localStream}
+                remoteStream={remoteStream}
+                remoteStreamVersion={remoteStreamVersion}
+                remoteVideoTracks={remoteVideoTracks}
+                localAudioLevel={localAudioLevel}
+                remoteAudioLevel={remoteAudioLevel}
+                isMuted={isMuted}
+                isCameraOn={isCameraOn}
+                isScreenSharing={isScreenSharing}
+                isReadabilityMode={isReadabilityMode}
+                onToggleMute={toggleMute}
+                onToggleCamera={toggleCamera}
+                onToggleScreenShare={toggleScreenShare}
+                onToggleReadabilityMode={toggleReadabilityMode}
+                onEndCall={() => endCall()}
+              />
+            )
+        : null}
     </>
   )
 }

@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { useCallback, useEffect, useRef, useState } from "react"
+import { toast } from "sonner"
 
 import { apiFetch } from "@/lib/api"
 import {
@@ -88,16 +89,22 @@ type CallContextValue = {
   callState: CallState
   localStream: MediaStream | null
   remoteStream: MediaStream | null
+  remoteStreamVersion: number
+  remoteVideoTracks: MediaStreamTrack[]
   localAudioLevel: number | null
   remoteAudioLevel: number | null
   isMuted: boolean
   isCameraOn: boolean
+  isScreenSharing: boolean
+  isReadabilityMode: boolean
   initiateCall: (peerHandle: string, peerPublicKey: string, peerIdentityKey: string, callType: CallType) => Promise<void>
   answerCall: () => Promise<void>
   rejectCall: (reason?: string) => void
   endCall: (reason?: string) => void
   toggleMute: () => void
   toggleCamera: () => void
+  toggleScreenShare: () => void
+  toggleReadabilityMode: () => void
   handleCallMessage: (senderHandle: string, senderIdentityKey: string, payload: CallMessagePayload) => void
 }
 
@@ -130,10 +137,12 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   const [callState, setCallState] = useState<CallState>(initialCallState)
   const [localStream, setLocalStream] = useState<MediaStream | null>(null)
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null)
+  const [remoteStreamVersion, setRemoteStreamVersion] = useState(0)
   const [localAudioLevel, setLocalAudioLevel] = useState<number | null>(null)
   const [remoteAudioLevel, setRemoteAudioLevel] = useState<number | null>(null)
   const [isMuted, setIsMuted] = useState(false)
   const [isCameraOn, setIsCameraOn] = useState(true)
+  const [isReadabilityMode, setIsReadabilityMode] = useState(false)
 
   const callStateRef = useRef(callState)
   callStateRef.current = callState
@@ -157,6 +166,12 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   }, [callState.peerPublicKey, publicTransportKey])
 
   const handleRemoteStream = useCallback((stream: MediaStream) => {
+    logCall("info", "Remote stream received/updated", {
+      audioTracks: stream.getAudioTracks().length,
+      videoTracks: stream.getVideoTracks().length,
+    })
+    // Always increment version to force components to re-evaluate stream tracks
+    setRemoteStreamVersion((v) => v + 1)
     setRemoteStream(stream)
     setCallState((prev) =>
       prev.status === "connected"
@@ -188,6 +203,56 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const pendingIceCandidatesRef = useRef<RTCIceCandidate[]>([])
+  const isRenegotiatingRef = useRef(false)
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null)
+  const sendCallMessageRef = useRef<typeof sendCallMessage | null>(null)
+
+  // Handle renegotiation (e.g., when adding screen share to audio-only call)
+  const handleNegotiationNeeded = useCallback(async () => {
+    const state = callStateRef.current
+    // Only handle renegotiation when already connected
+    if (state.status !== "connected" || !state.peerHandle || !state.peerPublicKey) {
+      logCall("info", "Skipping negotiation - not connected or missing peer info")
+      return
+    }
+
+    // Prevent multiple simultaneous renegotiations
+    if (isRenegotiatingRef.current) {
+      logCall("info", "Skipping negotiation - already renegotiating")
+      return
+    }
+
+    isRenegotiatingRef.current = true
+    logCall("info", "Handling renegotiation - creating new offer")
+
+    try {
+      const pc = peerConnectionRef.current
+      if (!pc) {
+        logCall("warn", "No peer connection for renegotiation")
+        return
+      }
+
+      const offer = await pc.createOffer()
+      await pc.setLocalDescription(offer)
+
+      // Send the new offer to the peer
+      if (sendCallMessageRef.current) {
+        await sendCallMessageRef.current(
+          state.peerHandle,
+          state.peerPublicKey,
+          "offer",
+          state.callId!,
+          state.callType,
+          { sdp: offer.sdp }
+        )
+        logCall("info", "Renegotiation offer sent")
+      }
+    } catch (error) {
+      logCall("warn", "Renegotiation failed", { error: String(error) })
+    } finally {
+      isRenegotiatingRef.current = false
+    }
+  }, [])
 
   const {
     getUserMedia,
@@ -199,6 +264,11 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     addIceCandidate,
     setMuted: setWebRTCMuted,
     setCameraEnabled,
+    isScreenSharing,
+    remoteVideoTracks,
+    startScreenShare,
+    stopScreenShare,
+    setScreenShareReadabilityMode,
     getPeerConnection,
     close: closeWebRTC,
   } = useWebRTC({
@@ -210,6 +280,12 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       // ICE candidates will be sent after we have the call established
       void sendPendingIceCandidates()
     },
+    onNegotiationNeeded: handleNegotiationNeeded,
+  })
+
+  // Keep refs updated for use in callbacks
+  useEffect(() => {
+    peerConnectionRef.current = getPeerConnection()
   })
   // Send a call signaling message via the messages API
   const sendCallMessage = useCallback(
@@ -270,6 +346,11 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     [identityPrivateKey, publicIdentityKey, user?.handle]
   )
 
+  // Keep sendCallMessage ref updated for renegotiation callback
+  useEffect(() => {
+    sendCallMessageRef.current = sendCallMessage
+  }, [sendCallMessage])
+
   // Send pending ICE candidates
   const sendPendingIceCandidates = useCallback(async () => {
     const { callId, peerHandle, peerPublicKey, callType } = callStateRef.current
@@ -289,7 +370,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
           { candidate: candidate.toJSON() }
         )
       } catch (error) {
-        logCall("error", "Failed to send ICE candidate", { error: String(error) })
+        logCall("warn", "Failed to send ICE candidate", { error: String(error) })
       }
     }
   }, [sendCallMessage])
@@ -311,7 +392,46 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
 
       switch (payload.call_action) {
         case "offer":
-          // Incoming call
+          // Check if this is a renegotiation for the current call
+          if (
+            callStateRef.current.status === "connected" &&
+            callStateRef.current.callId === payload.call_id &&
+            callStateRef.current.peerHandle === senderHandle
+          ) {
+            // Renegotiation - peer added/removed tracks (e.g., screen share)
+            logCall("info", "Received renegotiation offer")
+            void (async () => {
+              try {
+                const pc = peerConnectionRef.current
+                if (!pc) {
+                  logCall("warn", "No peer connection for renegotiation answer")
+                  return
+                }
+
+                await pc.setRemoteDescription({ type: "offer", sdp: payload.sdp! })
+                const answer = await pc.createAnswer()
+                await pc.setLocalDescription(answer)
+
+                const peerPublicKey = callStateRef.current.peerPublicKey
+                if (peerPublicKey) {
+                  await sendCallMessage(
+                    senderHandle,
+                    peerPublicKey,
+                    "answer",
+                    payload.call_id,
+                    payload.call_type,
+                    { sdp: answer.sdp }
+                  )
+                  logCall("info", "Sent renegotiation answer")
+                }
+              } catch (error) {
+                logCall("warn", "Failed to handle renegotiation offer", { error: String(error) })
+              }
+            })()
+            return
+          }
+
+          // New incoming call
           if (callStateRef.current.status !== "idle") {
             // Auto-respond busy - need to fetch transport key first
             void (async () => {
@@ -358,6 +478,25 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
 
         case "answer":
           if (callStateRef.current.callId !== payload.call_id) return
+
+          // Handle renegotiation answer (when already connected)
+          if (callStateRef.current.status === "connected") {
+            logCall("info", "Received renegotiation answer")
+            void (async () => {
+              try {
+                const pc = peerConnectionRef.current
+                if (pc) {
+                  await pc.setRemoteDescription({ type: "answer", sdp: payload.sdp! })
+                  logCall("info", "Applied renegotiation answer")
+                }
+              } catch (error) {
+                logCall("warn", "Failed to apply renegotiation answer", { error: String(error) })
+              }
+            })()
+            return
+          }
+
+          // Initial call answer
           if (callStateRef.current.status !== "initiating" && callStateRef.current.status !== "ringing") return
 
           // Clear timeout
@@ -373,7 +512,8 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
                 prev.status === "connected" ? prev : { ...prev, status: "connecting" }
               )
             } catch (error) {
-              logCall("error", "Failed to handle answer", { error: String(error) })
+              logCall("warn", "Failed to handle answer", { error: String(error) })
+              toast.error("Call failed", { description: "Failed to establish connection" })
               setCallState((prev) => ({
                 ...prev,
                 status: "ended",
@@ -590,7 +730,9 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         // Send any pending ICE candidates
         void sendPendingIceCandidates()
       } catch (error) {
-        logCall("error", "Failed to initiate call", { error: String(error) })
+        logCall("warn", "Failed to initiate call", { error: String(error) })
+        const errorMessage = error instanceof Error ? error.message : "Failed to start call"
+        toast.error("Call failed", { description: errorMessage })
         if (timeoutRef.current) {
           clearTimeout(timeoutRef.current)
           timeoutRef.current = null
@@ -602,7 +744,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
           status: "ended",
           peerHandle: prev.peerHandle,
           callType: prev.callType,
-          error: error instanceof Error ? error.message : "Failed to start call",
+          error: errorMessage,
         }))
       }
     },
@@ -641,7 +783,8 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         }))
         logCall("info", "Fetched peer transport key from directory")
       } catch (error) {
-        logCall("error", "Failed to fetch peer transport key", { error: String(error) })
+        logCall("warn", "Failed to fetch peer transport key", { error: String(error) })
+        toast.error("Failed to answer call", { description: "Could not find caller's key" })
         setCallState((prev) => ({
           ...prev,
           status: "ended",
@@ -689,13 +832,31 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
 
       pendingOfferRef.current = null
     } catch (error) {
-      logCall("error", "Failed to answer call", { error: String(error) })
+      logCall("warn", "Failed to answer call", { error: String(error) })
+      const errorMessage = error instanceof Error ? error.message : "Failed to answer call"
+      toast.error("Failed to answer call", { description: errorMessage })
+
+      // Notify the caller that the call failed
+      if (callState.callId && callState.peerHandle && peerTransportKey) {
+        try {
+          await sendCallMessage(
+            callState.peerHandle,
+            peerTransportKey,
+            "end",
+            callState.callId,
+            callState.callType
+          )
+        } catch {
+          // Best effort - ignore errors sending end message
+        }
+      }
+
       closeWebRTC()
       setLocalStream(null)
       setCallState((prev) => ({
         ...prev,
         status: "ended",
-        error: error instanceof Error ? error.message : "Failed to answer call",
+        error: errorMessage,
       }))
     }
   }, [callState, getUserMediaWithOptionalVideo, addLocalStream, createAnswer, sendCallMessage, closeWebRTC, sendPendingIceCandidates])
@@ -718,7 +879,7 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
           )
           peerTransportKey = entry.public_transport_key
         } catch (error) {
-          logCall("error", "Failed to fetch peer transport key for reject", { error: String(error) })
+          logCall("warn", "Failed to fetch peer transport key for reject", { error: String(error) })
         }
       }
 
@@ -813,6 +974,29 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     })
   }, [setCameraEnabled])
 
+  const toggleScreenShare = useCallback(async () => {
+    if (isScreenSharing) {
+      await stopScreenShare()
+      setIsReadabilityMode(false)
+    } else {
+      try {
+        await startScreenShare(isReadabilityMode)
+      } catch (error) {
+        logCall("warn", "Failed to start screen share", { error: String(error) })
+        // Don't throw - user may have cancelled the picker
+      }
+    }
+  }, [isScreenSharing, isReadabilityMode, startScreenShare, stopScreenShare])
+
+  const toggleReadabilityMode = useCallback(async () => {
+    const newMode = !isReadabilityMode
+    setIsReadabilityMode(newMode)
+    // Apply the new framerate constraint to the existing screen share
+    if (isScreenSharing) {
+      await setScreenShareReadabilityMode(newMode)
+    }
+  }, [isReadabilityMode, isScreenSharing, setScreenShareReadabilityMode])
+
   // Reset call state after showing ended status
   useEffect(() => {
     if (callState.status === "ended") {
@@ -845,16 +1029,22 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     callState,
     localStream,
     remoteStream,
+    remoteStreamVersion,
+    remoteVideoTracks,
     localAudioLevel,
     remoteAudioLevel,
     isMuted,
     isCameraOn,
+    isScreenSharing,
+    isReadabilityMode,
     initiateCall,
     answerCall,
     rejectCall,
     endCall,
     toggleMute,
     toggleCamera,
+    toggleScreenShare,
+    toggleReadabilityMode,
     handleCallMessage,
   }
 

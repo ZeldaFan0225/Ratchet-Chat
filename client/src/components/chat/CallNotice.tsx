@@ -75,9 +75,10 @@ export function CallNotice({
       <div
         className={cn(
           "flex items-center gap-2 px-4 py-2 rounded-full text-sm",
-          "bg-background/90 backdrop-blur-sm border border-border/50 shadow-sm text-muted-foreground",
-          eventType === "CALL_MISSED" && "text-destructive bg-destructive/10 border-destructive/20",
-          eventType === "CALL_DECLINED" && "text-orange-600 dark:text-orange-400 bg-orange-50/90 dark:bg-orange-950/80 border-orange-200/50 dark:border-orange-800/30"
+          "bg-background border border-border shadow-sm text-muted-foreground",
+          eventType === "CALL_MISSED" &&
+            "text-muted-foreground bg-destructive border-destructive/40",
+          eventType === "CALL_DECLINED" && "text-orange-700 dark:text-orange-200 bg-orange-50 dark:bg-orange-950 border-orange-200 dark:border-orange-800"
         )}
       >
         {getIcon()}

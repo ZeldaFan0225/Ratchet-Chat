@@ -23,7 +23,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
-import { formatTimestamp, truncateText, getReplyPreviewText } from "@/lib/messageUtils"
+import { formatMessageTime, truncateText, getReplyPreviewText } from "@/lib/messageUtils"
 import type { StoredMessage } from "@/types/dashboard"
 
 type MessageBubbleProps = {
@@ -65,7 +65,7 @@ export function MessageBubble({
   onEdit,
   onDelete,
 }: MessageBubbleProps) {
-  const meta = formatTimestamp(message.timestamp)
+  const meta = formatMessageTime(message.timestamp)
   const deliveredAt = message.direction === "out" ? message.deliveredAt : null
   const processedAt = message.direction === "out" ? message.processedAt : null
   const readAt = message.direction === "out" ? message.readAt : null
@@ -217,7 +217,12 @@ export function MessageBubble({
                 </ReactMarkdown>
               </div>
             )}
-            <div className="mt-2 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+            <div
+              className={cn(
+                "mt-2 flex w-full items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground",
+                message.direction === "out" ? "justify-end text-right" : "justify-start"
+              )}
+            >
               <span>{meta}</span>
               {message.editedAt ? <span>Edited</span> : null}
               {message.verified && (

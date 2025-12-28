@@ -83,7 +83,6 @@ const io = new SocketIOServer(server, {
 const SESSION_EXPIRY_DAYS = 7;
 
 io.use(async (socket, next) => {
-  console.log(`[SocketIO] Auth middleware`, { socketId: socket.id });
   const rawToken = socket.handshake.auth?.token ?? socket.handshake.query?.token;
   const tokenValue = Array.isArray(rawToken) ? rawToken[0] : rawToken;
   if (!tokenValue || typeof tokenValue !== "string") {
@@ -134,7 +133,6 @@ io.use(async (socket, next) => {
     socket.data.user = { id: payload.sub, username } as AuthenticatedUser;
     socket.data.sessionId = session.id;
     socket.data.tokenHash = tokenHash;
-    console.log(`[SocketIO] Auth successful`, { socketId: socket.id, userId: payload.sub });
     return next();
   } catch (error) {
     console.error(`[SocketIO] Auth error`, { socketId: socket.id, error: String(error) });
@@ -144,14 +142,11 @@ io.use(async (socket, next) => {
 
 io.on("connection", (socket) => {
   const user = socket.data.user as AuthenticatedUser | undefined;
-  console.log(`[SocketIO] Connection attempt`, { userId: user?.id, socketId: socket.id });
   if (!user?.id) {
-    console.log(`[SocketIO] Rejecting: no user id`);
     socket.disconnect(true);
     return;
   }
   socket.join(user.id);
-  console.log(`[SocketIO] User connected`, { userId: user.id, username: user.username, socketId: socket.id });
 
   socket.on("signal", async (data) => {
     const user = socket.data.user as AuthenticatedUser | undefined;
@@ -190,10 +185,6 @@ io.on("connection", (socket) => {
     } catch (error) {
       // Ignore signal errors
     }
-  });
-
-  socket.on("disconnect", (reason) => {
-    console.log(`[SocketIO] User disconnected`, { userId: user.id, socketId: socket.id, reason });
   });
 
   socket.on("error", (error) => {

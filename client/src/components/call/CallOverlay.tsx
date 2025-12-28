@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
-import { PhoneOff, Minimize2, Maximize2, Shield, Lock, Mic, MicOff, Video, VideoOff } from "lucide-react"
+import { PhoneOff, Minimize2, Maximize2, Shield, Lock, Mic, MicOff, Video, VideoOff, MonitorUp, MonitorOff, ScanText } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { CallControls } from "./CallControls"
@@ -19,12 +19,18 @@ type CallOverlayProps = {
   error: string | null
   localStream: MediaStream | null
   remoteStream: MediaStream | null
+  remoteStreamVersion: number
+  remoteVideoTracks: MediaStreamTrack[]
   localAudioLevel: number | null
   remoteAudioLevel: number | null
   isMuted: boolean
   isCameraOn: boolean
+  isScreenSharing: boolean
+  isReadabilityMode: boolean
   onToggleMute: () => void
   onToggleCamera: () => void
+  onToggleScreenShare: () => void
+  onToggleReadabilityMode: () => void
   onEndCall: () => void
 }
 
@@ -81,16 +87,23 @@ export function CallOverlay({
   error,
   localStream,
   remoteStream,
+  remoteStreamVersion,
+  remoteVideoTracks,
   localAudioLevel,
   remoteAudioLevel,
   isMuted,
   isCameraOn,
+  isScreenSharing,
+  isReadabilityMode,
   onToggleMute,
   onToggleCamera,
+  onToggleScreenShare,
+  onToggleReadabilityMode,
   onEndCall,
 }: CallOverlayProps) {
   const localVideoRef = useRef<HTMLVideoElement>(null)
   const remoteVideoRef = useRef<HTMLVideoElement>(null)
+  const remoteCameraRef = useRef<HTMLVideoElement>(null)
   const remoteAudioRef = useRef<HTMLAudioElement>(null)
   const [duration, setDuration] = useState(0)
   const [isMinimized, setIsMinimized] = useState(false)
@@ -113,7 +126,19 @@ export function CallOverlay({
 
   const username = peerHandle?.split("@")[0] ?? "Unknown"
   const initials = username.slice(0, 2).toUpperCase()
-  const isVideo = callType === "VIDEO"
+  const isVideoCall = callType === "VIDEO"
+
+  // Determine remote video tracks: camera vs screen share
+  // Screen share tracks typically have labels like "screen:..." or "window:..."
+  const remoteMainTrack = remoteVideoTracks.length > 0 ? (
+    // If there are 2+ tracks, second one is likely screen share (added later)
+    remoteVideoTracks.length > 1 ? remoteVideoTracks[1] : remoteVideoTracks[0]
+  ) : null
+  const remoteCameraTrack = remoteVideoTracks.length > 1 ? remoteVideoTracks[0] : null
+
+  const hasRemoteVideo = remoteVideoTracks.length > 0
+  const hasRemoteCameraPip = remoteVideoTracks.length > 1
+  const showVideoUI = isVideoCall || isScreenSharing || hasRemoteVideo
 
   // Vertical layout is determined by side anchors
   const isVertical = anchor === "ML" || anchor === "MR"
@@ -221,8 +246,10 @@ export function CallOverlay({
       localAudioTracks: localStream?.getAudioTracks().length ?? 0,
       hasRemoteStream: !!remoteStream,
       remoteAudioTracks: remoteStream?.getAudioTracks().length ?? 0,
+      remoteVideoTracks: remoteStream?.getVideoTracks().length ?? 0,
+      remoteStreamVersion,
     })
-  }, [localStream, remoteStream])
+  }, [localStream, remoteStream, remoteStreamVersion])
 
   // Attach local stream to video element
   useEffect(() => {
@@ -231,17 +258,49 @@ export function CallOverlay({
     }
   }, [localStream, isMinimized])
 
-  // Attach remote stream to video/audio element
+  // Attach remote video tracks to video elements
+  // Main video shows screen share (or camera if no screen share)
+  // Camera PiP shows camera when screen sharing
+  useEffect(() => {
+    console.log("[CallOverlay] Attaching remote tracks:", {
+      trackCount: remoteVideoTracks.length,
+      mainTrack: remoteMainTrack?.label,
+      cameraTrack: remoteCameraTrack?.label,
+      hasVideoRef: !!remoteVideoRef.current,
+      hasCameraRef: !!remoteCameraRef.current,
+    })
+
+    if (remoteVideoRef.current && remoteMainTrack) {
+      const stream = new MediaStream([remoteMainTrack])
+      remoteVideoRef.current.srcObject = stream
+      remoteVideoRef.current.play().catch((err) => {
+        console.log("[CallOverlay] Main video play failed:", err)
+      })
+    } else if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null
+    }
+
+    if (remoteCameraRef.current && remoteCameraTrack) {
+      const stream = new MediaStream([remoteCameraTrack])
+      remoteCameraRef.current.srcObject = stream
+      remoteCameraRef.current.play().catch((err) => {
+        console.log("[CallOverlay] Camera PiP play failed:", err)
+      })
+    } else if (remoteCameraRef.current) {
+      remoteCameraRef.current.srcObject = null
+    }
+  }, [remoteVideoTracks, remoteMainTrack, remoteCameraTrack, isMinimized])
+
+  // Attach remote audio stream
   useEffect(() => {
     if (!remoteStream) return
-
-    if (remoteVideoRef.current) {
-      remoteVideoRef.current.srcObject = remoteStream
-    }
     if (remoteAudioRef.current) {
       remoteAudioRef.current.srcObject = remoteStream
+      remoteAudioRef.current.play().catch((err) => {
+        console.log("[CallOverlay] Audio play failed:", err)
+      })
     }
-  }, [remoteStream, isMinimized])
+  }, [remoteStream, remoteStreamVersion, isMinimized])
 
   useEffect(() => {
     if (remoteVideoRef.current) {
@@ -370,7 +429,7 @@ export function CallOverlay({
             position: "fixed",
             left: position?.x ?? 0,
             top: position?.y ?? 0,
-            zIndex: 50,
+            zIndex: 10000,
             opacity: position ? 1 : 0,
             pointerEvents: position ? "auto" : "none",
             // Apply bounce timing function
@@ -391,16 +450,16 @@ export function CallOverlay({
         {/* Hidden audio element for minimized playback */}
         <audio ref={remoteAudioRef} autoPlay playsInline />
 
-        {isVideo && remoteStream && remoteStream.getVideoTracks().length > 0 ? (
+        {showVideoUI && hasRemoteVideo ? (
           <div className={cn(
-            "relative bg-muted rounded overflow-hidden shadow-sm shrink-0 pointer-events-none",
+            "relative bg-black rounded overflow-hidden shadow-sm shrink-0 pointer-events-none",
             isVertical ? "w-16 h-20" : "w-20 h-14"
           )}>
             <video
               ref={remoteVideoRef}
               autoPlay
               playsInline
-              className="w-full h-full object-cover"
+              className="w-full h-full object-contain"
             />
           </div>
         ) : (
@@ -443,7 +502,7 @@ export function CallOverlay({
               >
                 {isMuted ? <MicOff className="size-4" /> : <Mic className="size-4" />}
               </Button>
-              {isVideo && (
+              {isVideoCall && (
                 <Button
                   variant="ghost"
                   size="icon-sm"
@@ -461,6 +520,22 @@ export function CallOverlay({
                   {isCameraOn ? <VideoOff className="size-4" /> : <Video className="size-4" />}
                 </Button>
               )}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className={cn(
+                  "h-7 w-7",
+                  isScreenSharing && "text-primary hover:text-primary"
+                )}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onToggleScreenShare()
+                }}
+                title={isScreenSharing ? "Stop sharing" : "Share screen"}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                {isScreenSharing ? <MonitorOff className="size-4" /> : <MonitorUp className="size-4" />}
+              </Button>
               {status !== "ended" && (
                 <Button
                   variant="destructive"
@@ -483,11 +558,11 @@ export function CallOverlay({
                 onClick={(e) => {
                      e.stopPropagation(); // Prevent drag start
                      setIsMinimized(false);
-                     setAnchor("BR"); 
+                     setAnchor("BR");
                      setPosition(null); // Reset position
                 }}
                 title="Maximize"
-                onPointerDown={(e) => e.stopPropagation()} 
+                onPointerDown={(e) => e.stopPropagation()}
               >
                 <Maximize2 className="size-4" />
               </Button>
@@ -511,7 +586,7 @@ export function CallOverlay({
                 >
                   {isMuted ? <MicOff className="size-4" /> : <Mic className="size-4" />}
                 </Button>
-                {isVideo && (
+                {isVideoCall && (
                   <Button
                     variant="ghost"
                     size="icon-sm"
@@ -529,6 +604,22 @@ export function CallOverlay({
                     {isCameraOn ? <VideoOff className="size-4" /> : <Video className="size-4" />}
                   </Button>
                 )}
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className={cn(
+                    "h-7 w-7",
+                    isScreenSharing && "text-primary hover:text-primary"
+                  )}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onToggleScreenShare()
+                  }}
+                  title={isScreenSharing ? "Stop sharing" : "Share screen"}
+                  onPointerDown={(e) => e.stopPropagation()}
+                >
+                  {isScreenSharing ? <MonitorOff className="size-4" /> : <MonitorUp className="size-4" />}
+                </Button>
               </div>
               <div className="flex gap-1">
                 {status !== "ended" && (
@@ -570,7 +661,7 @@ export function CallOverlay({
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-background/95 backdrop-blur-sm flex flex-col">
+    <div className="fixed inset-0 z-[10000] bg-background/95 backdrop-blur-sm flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b">
         <div className="flex items-center gap-3">
@@ -619,16 +710,16 @@ export function CallOverlay({
       </div>
 
       {/* Video/Audio area */}
-      <div className="flex-1 flex items-center justify-center relative overflow-hidden">
-        {isVideo ? (
+      <div className="flex-1 flex items-center justify-center relative overflow-hidden bg-black">
+        {showVideoUI ? (
           <>
             {/* Remote video (main) or placeholder - show avatar if no video tracks */}
-            {remoteStream && remoteStream.getVideoTracks().length > 0 ? (
+            {hasRemoteVideo ? (
               <video
                 ref={remoteVideoRef}
                 autoPlay
                 playsInline
-                className="w-full h-full object-cover"
+                className="w-full h-full object-contain"
               />
             ) : (
               <div className="flex flex-col items-center gap-4">
@@ -649,28 +740,44 @@ export function CallOverlay({
               </div>
             )}
 
-            {/* Local video (picture-in-picture) - show even before remote stream arrives */}
-            {localStream && (
-              <div className="absolute bottom-4 right-4 w-32 h-24 md:w-48 md:h-36 rounded-lg overflow-hidden border-2 border-background shadow-lg">
-                <video
-                  ref={localVideoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  className={cn(
-                    "w-full h-full object-cover",
-                    !isCameraOn && "hidden"
+            {/* PiP stack: remote camera (when screen sharing) + local video */}
+            <div className="absolute bottom-4 right-4 flex flex-col gap-2">
+              {/* Remote camera PiP - shown when peer is screen sharing and has camera */}
+              {hasRemoteCameraPip && (
+                <div className="w-32 h-24 md:w-48 md:h-36 rounded-lg overflow-hidden border-2 border-background shadow-lg bg-black">
+                  <video
+                    ref={remoteCameraRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="block w-full h-full object-cover"
+                  />
+                </div>
+              )}
+
+              {/* Local video (picture-in-picture) - only show for video calls with camera */}
+              {isVideoCall && localStream && (
+                <div className="w-32 h-24 md:w-48 md:h-36 rounded-lg overflow-hidden border-2 border-background shadow-lg">
+                  <video
+                    ref={localVideoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className={cn(
+                      "block w-full h-full object-cover",
+                      !isCameraOn && "hidden"
+                    )}
+                  />
+                  {!isCameraOn && (
+                    <div className="w-full h-full bg-muted flex items-center justify-center">
+                      <Avatar>
+                        <AvatarFallback>You</AvatarFallback>
+                      </Avatar>
+                    </div>
                   )}
-                />
-                {!isCameraOn && (
-                  <div className="w-full h-full bg-muted flex items-center justify-center">
-                    <Avatar>
-                      <AvatarFallback>You</AvatarFallback>
-                    </Avatar>
-                  </div>
-                )}
-              </div>
-            )}
+                </div>
+              )}
+            </div>
           </>
         ) : (
           /* Audio call or waiting for video */
@@ -711,9 +818,13 @@ export function CallOverlay({
           <CallControls
             isMuted={isMuted}
             isCameraOn={isCameraOn}
-            isVideoCall={isVideo}
+            isVideoCall={isVideoCall}
+            isScreenSharing={isScreenSharing}
+            isReadabilityMode={isReadabilityMode}
             onToggleMute={onToggleMute}
             onToggleCamera={onToggleCamera}
+            onToggleScreenShare={onToggleScreenShare}
+            onToggleReadabilityMode={onToggleReadabilityMode}
             onEndCall={onEndCall}
             remoteVolume={remoteVolume}
             onRemoteVolumeChange={setRemoteVolume}
