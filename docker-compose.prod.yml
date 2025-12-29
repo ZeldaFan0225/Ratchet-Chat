@@ -18,6 +18,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
+      RP_ID: ${RP_ID}
       SERVER_HOST: ${SERVER_HOST:-localhost:3000}
       DATABASE_URL: ${DATABASE_URL:-postgresql://ratchet:ratchet_password@db:5432/ratchet_chat}
       JWT_SECRET: ${JWT_SECRET:-change-me}

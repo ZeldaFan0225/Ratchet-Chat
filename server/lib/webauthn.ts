@@ -31,6 +31,7 @@ setInterval(() => {
 
 const getRpId = (): string => {
   const candidate =
+    process.env.RP_ID ??
     process.env.CLIENT_URL ??
     process.env.CLIENT_ORIGIN ??
     process.env.NEXT_PUBLIC_APP_URL ??
