@@ -41,6 +41,10 @@ export const createDirectoryRouter = (prisma: PrismaClient) => {
           id: true,
           public_identity_key: true,
           public_transport_key: true,
+          display_name: true,
+          display_name_visibility: true,
+          avatar_filename: true,
+          avatar_visibility: true,
         },
       });
 
@@ -59,6 +63,9 @@ export const createDirectoryRouter = (prisma: PrismaClient) => {
         host: instanceHost,
         public_identity_key: user.public_identity_key,
         public_transport_key: user.public_transport_key,
+        display_name:
+          user.display_name_visibility === "public" ? user.display_name : null,
+        avatar_filename: user.avatar_visibility === "public" ? user.avatar_filename : null,
       });
     }
 
@@ -103,6 +110,8 @@ export const createDirectoryRouter = (prisma: PrismaClient) => {
         host: parsed.host,
         public_identity_key: data?.public_identity_key,
         public_transport_key: data?.public_transport_key,
+        display_name: data?.display_name ?? null,
+        avatar_filename: data?.avatar_filename ?? null,
       });
     } catch (error) {
       return res.status(502).json({ error: "Unable to reach host" });

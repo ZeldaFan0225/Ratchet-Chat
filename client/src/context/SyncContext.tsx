@@ -16,11 +16,13 @@ import {
   ContactsSyncHandler,
   TransportKeySyncHandler,
   SettingsSyncHandler,
+  PrivacySettingsSyncHandler,
   SessionSyncHandler,
   PasskeySyncHandler,
   type Settings,
   type PasskeyInfo,
 } from "@/sync/handlers"
+import type { EncryptedPayload } from "@/lib/crypto"
 
 type SyncContextValue = {
   subscribe: <T extends SyncEventType>(
@@ -36,6 +38,7 @@ const SyncContext = React.createContext<SyncContextValue | undefined>(undefined)
 type SyncProviderProps = {
   children: React.ReactNode
   onSettingsUpdated?: (settings: Partial<Settings>) => void
+  onPrivacySettingsUpdated?: (encrypted: EncryptedPayload | null) => Promise<void>
   onPasskeyAdded?: (passkey: PasskeyInfo) => void
   onPasskeyRemoved?: (credentialId: string) => void
   onSessionDeleted?: (sessionId: string) => void
@@ -44,6 +47,7 @@ type SyncProviderProps = {
 export function SyncProvider({
   children,
   onSettingsUpdated,
+  onPrivacySettingsUpdated,
   onPasskeyAdded,
   onPasskeyRemoved,
   onSessionDeleted,
@@ -68,6 +72,7 @@ export function SyncProvider({
 
   // Stable callbacks for handlers - use refs to avoid recreating manager on callback changes
   const settingsCallbackRef = React.useRef(onSettingsUpdated)
+  const privacySettingsCallbackRef = React.useRef(onPrivacySettingsUpdated)
   const passkeyAddedCallbackRef = React.useRef(onPasskeyAdded)
   const passkeyRemovedCallbackRef = React.useRef(onPasskeyRemoved)
   const sessionDeletedCallbackRef = React.useRef(onSessionDeleted)
@@ -79,6 +84,10 @@ export function SyncProvider({
   React.useEffect(() => {
     settingsCallbackRef.current = onSettingsUpdated
   }, [onSettingsUpdated])
+
+  React.useEffect(() => {
+    privacySettingsCallbackRef.current = onPrivacySettingsUpdated
+  }, [onPrivacySettingsUpdated])
 
   React.useEffect(() => {
     passkeyAddedCallbackRef.current = onPasskeyAdded
@@ -135,6 +144,13 @@ export function SyncProvider({
     manager.registerHandler(
       new SettingsSyncHandler((settings) => {
         settingsCallbackRef.current?.(settings)
+      })
+    )
+
+    // Register Privacy Settings handler
+    manager.registerHandler(
+      new PrivacySettingsSyncHandler(async (encrypted) => {
+        await privacySettingsCallbackRef.current?.(encrypted)
       })
     )
 
@@ -231,6 +247,7 @@ export function SyncProvider({
       manager.subscribe("VAULT_MESSAGE_UPDATED", () => bumpLastSync()),
       manager.subscribe("BLOCK_LIST_UPDATED", () => bumpLastSync()),
       manager.subscribe("SETTINGS_UPDATED", () => bumpLastSync()),
+      manager.subscribe("PRIVACY_SETTINGS_UPDATED", () => bumpLastSync()),
     ]
 
     return () => {

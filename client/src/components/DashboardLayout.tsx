@@ -3,7 +3,7 @@
 import * as React from "react"
 import { createPortal } from "react-dom"
 import EmojiPicker, { Theme } from "emoji-picker-react"
-import { Ban, ShieldCheck, ShieldOff } from "lucide-react"
+import { Ban, Check, ShieldAlert, ShieldCheck, ShieldOff, Trash2, UserPlus } from "lucide-react"
 import { useTheme } from "next-themes"
 
 import { AppSidebar, type ConversationPreview } from "@/components/app-sidebar"
@@ -30,6 +30,7 @@ import { useSocket } from "@/context/SocketContext"
 import { useSettings } from "@/hooks/useSettings"
 import { useRatchetSync } from "@/hooks/useRatchetSync"
 import { apiFetch } from "@/lib/api"
+import { getContactDisplayName, normalizeNickname } from "@/lib/contacts"
 import {
   CONTACT_TRANSPORT_KEY_UPDATED_EVENT,
   OPEN_CONTACT_CHAT_EVENT,
@@ -94,12 +95,15 @@ const formatMessageDateLabel = (date: Date, now: Date) => {
 const normalizeContact = (contact: Contact): Contact => {
   const handle = normalizeHandle(contact.handle)
   const parts = splitHandle(handle)
+  const normalizedNickname = normalizeNickname(contact.nickname)
   return {
     handle: parts?.handle ?? handle,
     username: contact.username || parts?.username || handle,
+    nickname: normalizedNickname,
     host: contact.host || parts?.host || "",
     publicIdentityKey: contact.publicIdentityKey ?? "",
     publicTransportKey: contact.publicTransportKey ?? "",
+    avatar_filename: contact.avatar_filename ?? null,
     createdAt: contact.createdAt,
   }
 }
@@ -115,9 +119,12 @@ const mergeContact = (existing: Contact, incoming: Contact): Contact => {
   return {
     handle: incoming.handle || existing.handle,
     username: incoming.username || existing.username,
+    nickname:
+      incoming.nickname !== undefined ? incoming.nickname : existing.nickname,
     host: incoming.host || existing.host,
     publicIdentityKey: incoming.publicIdentityKey || existing.publicIdentityKey,
     publicTransportKey: incoming.publicTransportKey || existing.publicTransportKey,
+    avatar_filename: incoming.avatar_filename !== undefined ? incoming.avatar_filename : existing.avatar_filename,
     createdAt,
   }
 }
@@ -166,6 +173,7 @@ export function DashboardLayout() {
   const [conversationMessages, setConversationMessages] = React.useState<Map<string, StoredMessage[]>>(new Map())
   const [loadedConversations, setLoadedConversations] = React.useState<Set<string>>(new Set())
   const [loadingConversation, setLoadingConversation] = React.useState<string | null>(null)
+  const [messageRequestHandles, setMessageRequestHandles] = React.useState<Set<string>>(new Set())
   const [composeText, setComposeText] = React.useState("")
   const [editingMessage, setEditingMessage] = React.useState<StoredMessage | null>(null)
   const [replyToMessage, setReplyToMessage] = React.useState<StoredMessage | null>(null)
@@ -181,6 +189,7 @@ export function DashboardLayout() {
   const [typingStatus, setTypingStatus] = React.useState<Record<string, boolean>>({})
   const [showRecipientInfo, setShowRecipientInfo] = React.useState(false)
   const [showBlockConfirm, setShowBlockConfirm] = React.useState(false)
+  const [addToContactsOnAccept, setAddToContactsOnAccept] = React.useState(false)
   const [attachment, setAttachment] = React.useState<{ name: string; type: string; size: number; data: string } | null>(null)
   const [previewImage, setPreviewImage] = React.useState<string | null>(null)
   const [pendingLink, setPendingLink] = React.useState<string | null>(null)
@@ -222,6 +231,9 @@ export function DashboardLayout() {
         return [normalized, ...current]
       }
       const next = [...current]
+      // Ensure we preserve avatar_filename if the incoming update doesn't have it
+      // But normalizeContact ensures it's at least null. 
+      // The mergeContact function handles the logic of "incoming vs existing"
       next[index] = mergeContact(next[index], normalized)
       return next
     })
@@ -537,15 +549,23 @@ export function DashboardLayout() {
           return
         }
         const plaintext = decodeUtf8(plaintextBytes)
-        const payload = JSON.parse(plaintext) as { type: string; status?: boolean }
-        
+        const payload = JSON.parse(plaintext) as {
+          type: string
+          status?: boolean
+        }
+
         if (payload.type === "typing") {
           const isTyping = Boolean(payload.status)
+          console.log("[typing] signal", {
+            sender: data.sender_handle,
+            status: payload.status,
+            isTyping,
+          })
           setTypingStatus((prev) => ({
             ...prev,
             [data.sender_handle]: isTyping
           }))
-          
+
           // Auto-clear typing status after 5 seconds just in case we miss the 'false' signal
           if (isTyping) {
             setTimeout(() => {
@@ -586,6 +606,9 @@ export function DashboardLayout() {
     contacts.find((contact) => contact.handle === activeId) ?? null
   const isActiveContactSaved = activeContact
     ? isSavedContact(activeContact.handle)
+    : false
+  const isMessageRequestChat = activeContact
+    ? messageRequestHandles.has(activeContact.handle)
     : false
   const activeMessagesRaw = activeContact
     ? messagesByPeer.get(activeContact.handle) ?? []
@@ -690,13 +713,13 @@ export function DashboardLayout() {
         return {
           id: contact.handle,
           uid: contact.handle,
-          name: contact.username,
+          name: getContactDisplayName(contact),
           handle: contact.handle,
+          avatarUrl: contact.avatar_filename ? `${process.env.NEXT_PUBLIC_API_URL}/uploads/avatars/${contact.avatar_filename}` : undefined,
           lastMessage: truncate(rawText),
           lastTimestamp: formatTimestamp(lastTimestampRaw),
           lastTimestampRaw,
           unread,
-          status: "offline" as const,
         }
       })
 
@@ -719,7 +742,7 @@ export function DashboardLayout() {
 
     // 1. Chats matching contact name/handle
     const matchingContacts = visibleContacts.filter((contact) =>
-      contact.username.toLowerCase().includes(query) ||
+      getContactDisplayName(contact).toLowerCase().includes(query) ||
       contact.handle.toLowerCase().includes(query)
     )
 
@@ -736,19 +759,19 @@ export function DashboardLayout() {
       results.push({
         id: contact.handle,
         uid: contact.handle,
-        name: contact.username,
+        name: getContactDisplayName(contact),
         handle: contact.handle,
+        avatarUrl: contact.avatar_filename ? `${process.env.NEXT_PUBLIC_API_URL}/uploads/avatars/${contact.avatar_filename}` : undefined,
         lastMessage: truncate(rawText),
         lastTimestamp: formatTimestamp(lastMessage?.timestamp ?? ""),
         unread,
-        status: "offline" as const,
       })
     }
 
     // 2. Found messages
     for (const contact of visibleContacts) {
       const thread = messagesByPeer.get(contact.handle) ?? []
-      const matchingMessages = thread.filter((msg) => 
+      const matchingMessages = thread.filter((msg) =>
         msg.text.toLowerCase().includes(query)
       )
 
@@ -757,12 +780,12 @@ export function DashboardLayout() {
         results.push({
           id: contact.handle,
           uid: `${contact.handle}:${msg.id}`,
-          name: contact.username,
+          name: getContactDisplayName(contact),
           handle: contact.handle,
+          avatarUrl: contact.avatar_filename ? `${process.env.NEXT_PUBLIC_API_URL}/uploads/avatars/${contact.avatar_filename}` : undefined,
           lastMessage: truncate(msg.text),
           lastTimestamp: formatTimestamp(msg.timestamp),
           unread: 0, // Search results typically don't show unread counts for the message itself
-          status: "offline" as const,
           foundMessageId: msg.id
         })
       }
@@ -771,9 +794,63 @@ export function DashboardLayout() {
     return results
   }, [contacts, messagesByPeer, activeId, sidebarSearchQuery, summaries, isBlocked])
 
+  // Build message requests list (conversations from unknown senders)
+  const messageRequests = React.useMemo<ConversationPreview[]>(() => {
+    if (messageRequestHandles.size === 0) {
+      return []
+    }
+
+    const truncate = (text: string, limit = 20) => {
+      if (text.length <= limit) return text
+      return text.substring(0, limit) + "..."
+    }
+
+    const requestList: ConversationPreview[] = []
+
+    for (const handle of messageRequestHandles) {
+      // Skip if blocked
+      if (isBlocked(handle)) continue
+
+      const thread = messagesByPeer.get(handle) ?? []
+      const requestMessages = thread.filter((m) => m.isMessageRequest)
+      if (requestMessages.length === 0) continue
+
+      const lastMessage = requestMessages[requestMessages.length - 1]
+      const unread = requestMessages.filter((m) => m.direction === "in" && !m.isRead).length
+
+      // Try to get username from the message or derive from handle
+      const parts = splitHandle(handle)
+      const username = lastMessage?.peerUsername ?? parts?.username ?? handle
+
+      requestList.push({
+        id: handle,
+        uid: `request:${handle}`,
+        name: username,
+        handle,
+        lastMessage: truncate(lastMessage?.text || "Attachment"),
+        lastTimestamp: formatTimestamp(lastMessage?.timestamp ?? ""),
+        unread,
+        isMessageRequest: true,
+      })
+    }
+
+    // Sort by most recent first
+    return requestList.sort((a, b) => {
+      const aThread = messagesByPeer.get(a.handle) ?? []
+      const bThread = messagesByPeer.get(b.handle) ?? []
+      const aLast = aThread[aThread.length - 1]?.timestamp ?? ""
+      const bLast = bThread[bThread.length - 1]?.timestamp ?? ""
+      return bLast.localeCompare(aLast)
+    })
+  }, [messageRequestHandles, messagesByPeer, isBlocked])
 
   const handleTyping = React.useCallback(async () => {
     if (!settings.showTypingIndicator || !activeContact || !socket || !activeContact.publicTransportKey) return
+
+    // If contacts-only mode is enabled, check if recipient is a contact
+    if (settings.showTypingToContactsOnly && !isSavedContact(activeContact.handle)) {
+      return
+    }
 
     // Clear existing timeout
     if (typingTimeoutRef.current) {
@@ -781,6 +858,10 @@ export function DashboardLayout() {
     } else {
        const payload = JSON.stringify({ type: "typing", status: true })
        encryptTransitEnvelope(payload, activeContact.publicTransportKey).then(blob => {
+         console.log("[typing] send", {
+           recipient: activeContact.handle,
+           status: true,
+         })
          socket.emit("signal", {
            recipient_handle: activeContact.handle,
            encrypted_blob: blob
@@ -792,6 +873,10 @@ export function DashboardLayout() {
     typingTimeoutRef.current = setTimeout(() => {
       const payload = JSON.stringify({ type: "typing", status: false })
        encryptTransitEnvelope(payload, activeContact.publicTransportKey).then(blob => {
+         console.log("[typing] send", {
+           recipient: activeContact.handle,
+           status: false,
+         })
          socket.emit("signal", {
            recipient_handle: activeContact.handle,
            encrypted_blob: blob
@@ -799,7 +884,7 @@ export function DashboardLayout() {
        })
        typingTimeoutRef.current = null
     }, 2000)
-  }, [activeContact, settings.showTypingIndicator, socket])
+  }, [activeContact, settings.showTypingIndicator, settings.showTypingToContactsOnly, socket, isSavedContact])
 
   // Effect 1: Handle scrolling to a specific message
   React.useEffect(() => {
@@ -966,6 +1051,58 @@ export function DashboardLayout() {
     suppressStoredSelection,
   ])
 
+  // Refresh contact info (avatar, keys) when selecting a chat
+  React.useEffect(() => {
+    if (!activeContact) return
+
+    const refreshInfo = async () => {
+      try {
+        const entry = await apiFetch<DirectoryEntry>(
+          `/api/directory?handle=${encodeURIComponent(activeContact.handle)}`
+        )
+
+        const handleParts = splitHandle(activeContact.handle)
+        const trimmedDisplayName = entry.display_name?.trim() ?? ""
+        const resolvedUsername =
+          trimmedDisplayName.length > 0
+            ? trimmedDisplayName
+            : handleParts?.username ?? activeContact.handle
+        
+        // Check if anything changed that is worth saving
+        const hasChanges = 
+          entry.public_transport_key !== activeContact.publicTransportKey ||
+          entry.public_identity_key !== activeContact.publicIdentityKey ||
+          entry.avatar_filename !== activeContact.avatar_filename ||
+          resolvedUsername !== activeContact.username
+
+        if (hasChanges) {
+          const updatedContact: Contact = {
+            ...activeContact,
+            username: resolvedUsername,
+            publicIdentityKey: entry.public_identity_key ?? activeContact.publicIdentityKey,
+            publicTransportKey: entry.public_transport_key ?? activeContact.publicTransportKey,
+            avatar_filename: entry.avatar_filename ?? null // Null if hidden/missing
+          }
+          
+          // Update local state immediately
+          upsertLocalContact(updatedContact)
+          
+          // Persist if it's a saved contact
+          if (isSavedContact(updatedContact.handle)) {
+            void addContact(updatedContact)
+          }
+        }
+      } catch (err) {
+        // Ignore directory lookup errors (offline, etc)
+      }
+    }
+
+    // Debounce slightly to avoid rapid requests on rapid switching
+    const timer = setTimeout(() => void refreshInfo(), 100)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeContact?.handle])
+
   React.useEffect(() => {
     console.log("[chat-selection] activeId changed", activeId)
   }, [activeId])
@@ -1097,6 +1234,15 @@ export function DashboardLayout() {
       )
       const nextMessages = decoded.filter(Boolean) as StoredMessage[]
       setMessages(nextMessages)
+
+      // Also extract unique peer handles from message requests
+      const requestHandles = new Set<string>()
+      for (const msg of nextMessages) {
+        if (msg.isMessageRequest) {
+          requestHandles.add(msg.peerHandle)
+        }
+      }
+      setMessageRequestHandles(requestHandles)
     }
     void loadMessages()
   }, [masterKey, lastSync, user])
@@ -1218,7 +1364,14 @@ export function DashboardLayout() {
       (message) => message.direction === "in" && !message.isRead
     )
     const unreadIds = unreadMessages.map((message) => message.id)
-    const receiptTargets = settings.sendReadReceipts
+
+    // Check if we should send receipts based on sendReadReceiptsTo setting
+    const isContactSaved = isSavedContact(activeContact.handle)
+    const shouldSendReceipts =
+      settings.sendReadReceiptsTo === "everybody" ||
+      (settings.sendReadReceiptsTo === "contacts" && isContactSaved)
+
+    const receiptTargets = shouldSendReceipts
       ? activeMessagesRaw.filter(
           (message) =>
             message.direction === "in" &&
@@ -1245,9 +1398,9 @@ export function DashboardLayout() {
           )
         )
       }
-      
+
       // Gate read receipts based on settings
-      if (!settings.sendReadReceipts) return
+      if (!shouldSendReceipts) return
 
       const sentIds: string[] = []
       const readAt = new Date().toISOString()
@@ -1279,7 +1432,7 @@ export function DashboardLayout() {
 
     document.addEventListener("visibilitychange", handleVisibilityChange)
     window.addEventListener("focus", handleFocus)
-    
+
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange)
       window.removeEventListener("focus", handleFocus)
@@ -1288,14 +1441,16 @@ export function DashboardLayout() {
     activeContact,
     activeMessagesRaw,
     sendReadReceipt,
-    settings.sendReadReceipts,
+    settings.sendReadReceiptsTo,
+    isSavedContact,
     updateMessagePayload,
   ])
 
   const handleDeleteChat = React.useCallback(async () => {
     if (!activeContact || !user) return
+    const displayName = getContactDisplayName(activeContact)
     const confirmDelete = window.confirm(
-      `Are you sure you want to delete the chat with ${activeContact.username}? This cannot be undone.`
+      `Are you sure you want to delete the chat with ${displayName}? This cannot be undone.`
     )
     if (!confirmDelete) return
 
@@ -1341,9 +1496,81 @@ export function DashboardLayout() {
     setActiveId("")
   }, [activeContact, blockUser])
 
+  // Accept a message request - marks all messages from this sender as not a request
+  const handleAcceptRequest = React.useCallback(async (shouldAddToContacts: boolean) => {
+    if (!activeContact || !user) return
+    const handle = activeContact.handle
+    const ownerId = user.id ?? user.handle
+
+    // Update IndexedDB - clear isMessageRequest flag for all messages from this handle
+    await db.messages
+      .where("[ownerId+peerHandle]")
+      .equals([ownerId, handle])
+      .modify({ isMessageRequest: false })
+
+    // Update local state
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.peerHandle === handle ? { ...m, isMessageRequest: false } : m
+      )
+    )
+    setMessageRequestHandles((prev) => {
+      const next = new Set(prev)
+      next.delete(handle)
+      return next
+    })
+
+    // Optionally add to contacts
+    if (shouldAddToContacts && !isSavedContact(handle)) {
+      await addContact({
+        handle: activeContact.handle,
+        username: activeContact.username,
+        host: activeContact.host,
+        publicIdentityKey: activeContact.publicIdentityKey,
+        publicTransportKey: activeContact.publicTransportKey,
+      })
+    }
+  }, [activeContact, user, addContact, isSavedContact])
+
+  // Delete a message request - removes all messages and the conversation
+  const handleDeleteRequest = React.useCallback(async () => {
+    if (!activeContact || !user) return
+    const handle = activeContact.handle
+    const ownerId = user.id ?? user.handle
+
+    // Delete from IndexedDB
+    const ids = activeMessagesRaw
+      .filter((m) => m.peerHandle === handle)
+      .map((m) => m.id)
+    await db.messages.bulkDelete(ids)
+
+    // Try to delete from server vault
+    try {
+      await apiFetch("/messages/vault/delete-chat", {
+        method: "POST",
+        body: { peer_handle: handle },
+      })
+    } catch {
+      // Best-effort
+    }
+
+    // Update local state
+    setMessages((prev) => prev.filter((m) => !ids.includes(m.id)))
+    setMessageRequestHandles((prev) => {
+      const next = new Set(prev)
+      next.delete(handle)
+      return next
+    })
+
+    // Remove from contacts if exists
+    await removeContact(handle)
+    setContacts((prev) => prev.filter((c) => c.handle !== handle))
+    setActiveId("")
+  }, [activeContact, user, activeMessagesRaw, removeContact])
+
   const handleBlockContact = React.useCallback(
     async (contact: Contact) => {
-      const label = contact.username || contact.handle
+      const label = getContactDisplayName(contact)
       const confirmed = window.confirm(`Block ${label}?`)
       if (!confirmed) return
       await blockUser(contact.handle)
@@ -1357,7 +1584,7 @@ export function DashboardLayout() {
 
   const handleRemoveContact = React.useCallback(
     async (contact: Contact) => {
-      const label = contact.username || contact.handle
+      const label = getContactDisplayName(contact)
       const confirmed = window.confirm(`Remove ${label} from contacts?`)
       if (!confirmed) return
       await removeContact(contact.handle)
@@ -1369,19 +1596,23 @@ export function DashboardLayout() {
   const handleAddContact = React.useCallback(
     async (contact: Contact) => {
       let nextContact = contact
-      if (!contact.publicTransportKey || !contact.publicIdentityKey) {
-        try {
-          const entry = await apiFetch<DirectoryEntry>(
-            `/api/directory?handle=${encodeURIComponent(contact.handle)}`
-          )
-          nextContact = {
-            ...contact,
-            publicIdentityKey: entry.public_identity_key ?? contact.publicIdentityKey,
-            publicTransportKey: entry.public_transport_key ?? contact.publicTransportKey,
-          }
-        } catch {
-          // Directory lookup is best-effort; proceed with what we have.
+      try {
+        const entry = await apiFetch<DirectoryEntry>(
+          `/api/directory?handle=${encodeURIComponent(contact.handle)}`
+        )
+        const handleParts = splitHandle(contact.handle)
+        const trimmedDisplayName = entry.display_name?.trim() ?? ""
+        nextContact = {
+          ...contact,
+          username:
+            trimmedDisplayName.length > 0
+              ? trimmedDisplayName
+              : handleParts?.username ?? contact.username,
+          publicIdentityKey: entry.public_identity_key ?? contact.publicIdentityKey,
+          publicTransportKey: entry.public_transport_key ?? contact.publicTransportKey,
         }
+      } catch {
+        // Directory lookup is best-effort; proceed with what we have.
       }
       const savedContact = {
         ...nextContact,
@@ -1614,6 +1845,7 @@ export function DashboardLayout() {
 
   const handleExportChat = React.useCallback(() => {
     if (!activeContact) return
+    const displayName = getContactDisplayName(activeContact)
     const threadMessages = messagesByPeer.get(activeContact.handle) ?? []
     const exportData = {
       contact: activeContact,
@@ -1626,7 +1858,7 @@ export function DashboardLayout() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
     a.href = url
-    a.download = `chat-export-${activeContact.username}-${new Date().toISOString().split('T')[0]}.json`
+    a.download = `chat-export-${displayName}-${new Date().toISOString().split('T')[0]}.json`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
@@ -1648,9 +1880,10 @@ export function DashboardLayout() {
         )
         const handle = entry.handle ?? normalized
         const handleParts = splitHandle(handle) ?? parts
+        const trimmedDisplayName = entry.display_name?.trim() ?? ""
         const nextContact: Contact = {
           handle,
-          username: handleParts.username,
+          username: trimmedDisplayName.length > 0 ? trimmedDisplayName : handleParts.username,
           host: handleParts.host,
           publicIdentityKey: entry.public_identity_key,
           publicTransportKey: entry.public_transport_key,
@@ -1934,7 +2167,7 @@ export function DashboardLayout() {
         text: trimmed,
         attachments,
         peerHandle: activeContact.handle,
-        peerUsername: activeContact.username,
+        peerUsername: getContactDisplayName(activeContact),
         peerHost: activeContact.host,
         peerIdentityKey: activeContact.publicIdentityKey,
         peerTransportKey: activeContact.publicTransportKey,
@@ -2074,7 +2307,7 @@ export function DashboardLayout() {
         type: "edit",
         text: trimmed,
         peerHandle: activeContact.handle,
-        peerUsername: activeContact.username,
+        peerUsername: getContactDisplayName(activeContact),
         peerHost: activeContact.host,
         peerIdentityKey: activeContact.publicIdentityKey,
         peerTransportKey: activeContact.publicTransportKey,
@@ -2220,7 +2453,7 @@ export function DashboardLayout() {
           type: "delete",
           text: DELETE_SIGNATURE_BODY,
           peerHandle: activeContact.handle,
-          peerUsername: activeContact.username,
+          peerUsername: getContactDisplayName(activeContact),
           peerHost: activeContact.host,
           peerIdentityKey: activeContact.publicIdentityKey,
           peerTransportKey: activeContact.publicTransportKey,
@@ -2364,7 +2597,7 @@ export function DashboardLayout() {
           reaction_action: reactionAction,
           reaction_emoji: emoji,
           peerHandle: activeContact.handle,
-          peerUsername: activeContact.username,
+          peerUsername: getContactDisplayName(activeContact),
           peerHost: activeContact.host,
           peerIdentityKey: activeContact.publicIdentityKey,
           peerTransportKey: activeContact.publicTransportKey,
@@ -2512,7 +2745,7 @@ export function DashboardLayout() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Ban className="h-5 w-5 text-destructive" />
-              Block {activeContact?.username}?
+              Block {activeContact ? getContactDisplayName(activeContact) : "user"}?
             </DialogTitle>
             <DialogDescription asChild>
               <div className="space-y-3 pt-2 text-sm text-muted-foreground">
@@ -2545,6 +2778,7 @@ export function DashboardLayout() {
 
       <AppSidebar
         conversations={conversations}
+        messageRequests={messageRequests}
         activeId={activeContact?.handle ?? ""}
         onSelectConversation={(id, messageId) => {
           setActiveId(id)
@@ -2634,6 +2868,65 @@ export function DashboardLayout() {
                   <div className="mx-auto rounded-full bg-card/80 px-4 py-2 text-xs text-muted-foreground shadow-sm">
                     Messages are sealed locally. The server only stores ciphertext.
                   </div>
+                  {isMessageRequestChat && (
+                    <div className="mx-auto w-full max-w-lg rounded-xl border border-amber-300 bg-amber-50 p-4 shadow-sm dark:border-amber-700 dark:bg-amber-950/50">
+                      <div className="flex items-start gap-3">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-900/50">
+                          <ShieldAlert className="h-5 w-5 text-amber-600 dark:text-amber-400" />
+                        </div>
+                        <div className="flex-1 space-y-3">
+                          <div>
+                            <h3 className="text-sm font-semibold text-amber-900 dark:text-amber-100">
+                              Message Request
+                            </h3>
+                            <p className="text-xs text-amber-700 dark:text-amber-300">
+                              This is a message from someone not in your contacts.
+                              Attachments are hidden for your safety.
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Button
+                              size="sm"
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                              onClick={() => void handleAcceptRequest(addToContactsOnAccept)}
+                            >
+                              <Check className="h-3.5 w-3.5 mr-1.5" />
+                              Accept
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="border-red-300 text-red-600 hover:bg-red-50 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-950/50"
+                              onClick={() => setShowBlockConfirm(true)}
+                            >
+                              <Ban className="h-3.5 w-3.5 mr-1.5" />
+                              Block
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="border-muted-foreground/30"
+                              onClick={() => void handleDeleteRequest()}
+                            >
+                              <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+                              Delete
+                            </Button>
+                          </div>
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={addToContactsOnAccept}
+                              onChange={(e) => setAddToContactsOnAccept(e.target.checked)}
+                              className="h-4 w-4 rounded border-amber-400 text-emerald-600 focus:ring-emerald-500 dark:border-amber-600"
+                            />
+                            <span className="text-xs text-amber-700 dark:text-amber-300">
+                              Add to contacts when accepting
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   {loadingConversation === activeContact?.handle && (
                     <div className="flex justify-center py-4">
                       <div className="flex items-center gap-2 text-muted-foreground">

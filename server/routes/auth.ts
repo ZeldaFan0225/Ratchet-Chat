@@ -4,6 +4,11 @@ import { Router } from "express";
 import jwt from "jsonwebtoken";
 import type { Server as SocketIOServer } from "socket.io";
 import { z } from "zod";
+import multer from "multer";
+import path from "path";
+import fs from "fs/promises";
+import { fileTypeFromBuffer } from "file-type";
+import { v4 as uuidv4 } from "uuid";
 
 import { getJwtSecret, hashToken, createAuthenticateToken } from "../middleware/auth";
 import { createRateLimiter } from "../middleware/rateLimit";
@@ -44,6 +49,8 @@ const LOGIN_BACKOFF_MAX_MS = Number(
 const updateSettingsSchema = z.object({
   showTypingIndicator: z.boolean().optional(),
   sendReadReceipts: z.boolean().optional(),
+  displayName: z.union([z.string().max(64), z.null()]).optional(),
+  displayNameVisibility: z.enum(["public", "hidden"]).optional(),
 });
 
 const rotateTransportKeySchema = z.object({
@@ -228,16 +235,120 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
 
   router.use(authLimiter);
 
+  const AVATAR_DIR = path.join(process.cwd(), "uploads", "avatars");
+  const MAX_AVATAR_SIZE = 200 * 1024; // 200KB
+
+  const storage = multer.memoryStorage();
+  const upload = multer({
+    storage,
+    limits: { fileSize: MAX_AVATAR_SIZE },
+  });
+
+  router.post("/avatar", authenticateToken, upload.single("avatar"), async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+    if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+
+    try {
+      // 1. Verify file type (Magic numbers)
+      const type = await fileTypeFromBuffer(req.file.buffer);
+      if (!type || !["image/jpeg", "image/png", "image/webp"].includes(type.mime)) {
+        return res.status(400).json({ error: "Invalid file type. Only JPEG, PNG and WebP are allowed." });
+      }
+
+      // 2. Ensure directory exists
+      await fs.mkdir(AVATAR_DIR, { recursive: true });
+
+      // 3. Get existing avatar to delete
+      const user = await prisma.user.findUnique({
+        where: { id: req.user.id },
+        select: { avatar_filename: true },
+      });
+
+      if (user?.avatar_filename) {
+        const oldPath = path.join(AVATAR_DIR, user.avatar_filename);
+        await fs.unlink(oldPath).catch(() => {}); // Ignore errors if file not found
+      }
+
+      // 4. Save new file with UUID
+      const filename = `${uuidv4()}.${type.ext}`;
+      const filePath = path.join(AVATAR_DIR, filename);
+      await fs.writeFile(filePath, req.file.buffer);
+
+      // 5. Update database
+      await prisma.user.update({
+        where: { id: req.user.id },
+        data: { avatar_filename: filename },
+      });
+
+      return res.json({ filename });
+    } catch (error) {
+      console.error("Avatar upload error:", error);
+      return res.status(500).json({ error: "Failed to upload avatar" });
+    }
+  });
+
+  router.delete("/avatar", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+
+    try {
+      const user = await prisma.user.findUnique({
+        where: { id: req.user.id },
+        select: { avatar_filename: true },
+      });
+
+      if (user?.avatar_filename) {
+        const filePath = path.join(AVATAR_DIR, user.avatar_filename);
+        await fs.unlink(filePath).catch(() => {});
+      }
+
+      await prisma.user.update({
+        where: { id: req.user.id },
+        data: { avatar_filename: null },
+      });
+
+      return res.json({ ok: true });
+    } catch (error) {
+      return res.status(500).json({ error: "Failed to delete avatar" });
+    }
+  });
+
+  router.patch("/avatar/visibility", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+    
+    const { visibility } = req.body;
+    if (visibility !== "public" && visibility !== "hidden") {
+      return res.status(400).json({ error: "Invalid visibility" });
+    }
+
+    await prisma.user.update({
+      where: { id: req.user.id },
+      data: { avatar_visibility: visibility },
+    });
+
+    return res.json({ visibility });
+  });
+
   router.get("/settings", authenticateToken, async (req: Request, res: Response) => {
     if (!req.user) return res.status(401).json({ error: "Unauthorized" });
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
-      select: { show_typing_indicator: true, send_read_receipts: true },
+      select: { 
+        show_typing_indicator: true, 
+        send_read_receipts: true,
+        display_name: true,
+        display_name_visibility: true,
+        avatar_filename: true,
+        avatar_visibility: true
+      },
     });
     if (!user) return res.status(404).json({ error: "User not found" });
     return res.json({
       showTypingIndicator: user.show_typing_indicator,
       sendReadReceipts: user.send_read_receipts,
+      displayName: user.display_name,
+      displayNameVisibility: user.display_name_visibility,
+      avatarFilename: user.avatar_filename,
+      avatarVisibility: user.avatar_visibility
     });
   });
 
@@ -246,28 +357,45 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
     const parsed = updateSettingsSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "Invalid request" });
     
-    const { showTypingIndicator, sendReadReceipts } = parsed.data;
+    const { showTypingIndicator, sendReadReceipts, displayName, displayNameVisibility } =
+      parsed.data;
     const data: any = {};
     if (showTypingIndicator !== undefined) data.show_typing_indicator = showTypingIndicator;
     if (sendReadReceipts !== undefined) data.send_read_receipts = sendReadReceipts;
+    if (displayName !== undefined) {
+      const trimmed = displayName?.trim() ?? "";
+      data.display_name = trimmed.length > 0 ? trimmed : null;
+    }
+    if (displayNameVisibility !== undefined) {
+      data.display_name_visibility = displayNameVisibility;
+    }
     
     if (Object.keys(data).length === 0) return res.json({});
 
     const user = await prisma.user.update({
       where: { id: req.user.id },
       data,
-      select: { show_typing_indicator: true, send_read_receipts: true },
+      select: {
+        show_typing_indicator: true,
+        send_read_receipts: true,
+        display_name: true,
+        display_name_visibility: true,
+      },
     });
 
     // Notify other devices of settings change
     io?.to(req.user.id).emit("SETTINGS_UPDATED", {
       showTypingIndicator: user.show_typing_indicator,
       sendReadReceipts: user.send_read_receipts,
+      displayName: user.display_name,
+      displayNameVisibility: user.display_name_visibility,
     });
 
     return res.json({
       showTypingIndicator: user.show_typing_indicator,
       sendReadReceipts: user.send_read_receipts,
+      displayName: user.display_name,
+      displayNameVisibility: user.display_name_visibility,
     });
   });
 
@@ -351,6 +479,46 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
     return res.json({ success: true });
   });
 
+  // Encrypted privacy settings endpoints (server only sees encrypted blob)
+  router.get("/privacy-settings", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { encrypted_privacy_settings: true, encrypted_privacy_settings_iv: true },
+    });
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    if (!user.encrypted_privacy_settings || !user.encrypted_privacy_settings_iv) {
+      return res.json({ ciphertext: null, iv: null });
+    }
+
+    return res.json({
+      ciphertext: user.encrypted_privacy_settings,
+      iv: user.encrypted_privacy_settings_iv,
+    });
+  });
+
+  router.put("/privacy-settings", authenticateToken, async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+
+    const { ciphertext, iv } = req.body;
+    if (typeof ciphertext !== "string" || typeof iv !== "string") {
+      return res.status(400).json({ error: "Invalid request: ciphertext and iv required" });
+    }
+
+    await prisma.user.update({
+      where: { id: req.user.id },
+      data: {
+        encrypted_privacy_settings: ciphertext,
+        encrypted_privacy_settings_iv: iv,
+      },
+    });
+
+    io?.to(req.user.id).emit("PRIVACY_SETTINGS_UPDATED", { ciphertext, iv });
+
+    return res.json({ success: true });
+  });
+
   router.patch("/keys/transport", authenticateToken, async (req: Request, res: Response) => {
     if (!req.user) return res.status(401).json({ error: "Unauthorized" });
     const parsed = rotateTransportKeySchema.safeParse(req.body);
@@ -396,9 +564,14 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
     if (!req.user) return res.status(401).json({ error: "Unauthorized" });
     const existing = await prisma.user.findUnique({
       where: { id: req.user.id },
-      select: { id: true },
+      select: { id: true, avatar_filename: true },
     });
     if (!existing) return res.status(404).json({ error: "User not found" });
+
+    if (existing.avatar_filename) {
+      const filePath = path.join(AVATAR_DIR, existing.avatar_filename);
+      await fs.unlink(filePath).catch(() => {});
+    }
 
     await prisma.user.delete({ where: { id: req.user.id } });
     return res.json({ ok: true });

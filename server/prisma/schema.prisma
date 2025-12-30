@@ -21,10 +21,17 @@ model User {
   encrypted_transport_iv     String
   show_typing_indicator      Boolean             @default(true)
   send_read_receipts         Boolean             @default(true)
+  display_name               String?
+  display_name_visibility    String              @default("public") // "public" or "hidden"
+  avatar_filename            String?
+  avatar_visibility          String              @default("public") // "public" or "hidden"
   encrypted_block_list       String?             @db.Text
   encrypted_block_list_iv    String?
   encrypted_contacts         String?             @db.Text
   encrypted_contacts_iv      String?
+  // Privacy settings (encrypted client-side, server only stores blob)
+  encrypted_privacy_settings    String?          @db.Text
+  encrypted_privacy_settings_iv String?
   created_at                 DateTime            @default(now())
   incoming_queue             IncomingQueue[]     @relation("IncomingRecipient")
   vault_messages             MessageVault[]      @relation("VaultOwner")

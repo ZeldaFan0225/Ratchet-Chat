@@ -48,10 +48,13 @@ function ProvidersWithAuth({ children }: { children: React.ReactNode }) {
 }
 
 function SyncProviderWithSettings({ children }: { children: React.ReactNode }) {
-  const { applyRemoteSettings } = useSettings()
+  const { applyRemoteSettings, applyEncryptedPrivacySettings } = useSettings()
 
   return (
-    <SyncProvider onSettingsUpdated={applyRemoteSettings}>
+    <SyncProvider
+      onSettingsUpdated={applyRemoteSettings}
+      onPrivacySettingsUpdated={applyEncryptedPrivacySettings}
+    >
       {children}
     </SyncProvider>
   )

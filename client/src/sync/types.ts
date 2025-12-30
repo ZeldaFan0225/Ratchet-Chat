@@ -85,6 +85,14 @@ export interface SettingsUpdatedEvent extends BaseSyncEvent {
   type: "SETTINGS_UPDATED"
   showTypingIndicator?: boolean
   sendReadReceipts?: boolean
+  displayName?: string | null
+  displayNameVisibility?: "public" | "hidden"
+}
+
+export interface PrivacySettingsUpdatedEvent extends BaseSyncEvent {
+  type: "PRIVACY_SETTINGS_UPDATED"
+  ciphertext: string
+  iv: string
 }
 
 // ---- Session Events ----
@@ -127,6 +135,7 @@ export type SyncEvent =
   | ContactsUpdatedEvent
   | TransportKeyRotatedEvent
   | SettingsUpdatedEvent
+  | PrivacySettingsUpdatedEvent
   | SessionInvalidatedEvent
   | SessionDeletedEvent
   | PasskeyAddedEvent
@@ -142,6 +151,7 @@ export type SyncEventMap = {
   CONTACTS_UPDATED: ContactsUpdatedEvent
   TRANSPORT_KEY_ROTATED: TransportKeyRotatedEvent
   SETTINGS_UPDATED: SettingsUpdatedEvent
+  PRIVACY_SETTINGS_UPDATED: PrivacySettingsUpdatedEvent
   SESSION_INVALIDATED: SessionInvalidatedEvent
   SESSION_DELETED: SessionDeletedEvent
   PASSKEY_ADDED: PasskeyAddedEvent
@@ -160,6 +170,7 @@ export const SYNC_EVENT_TYPES: SyncEventType[] = [
   "CONTACTS_UPDATED",
   "TRANSPORT_KEY_ROTATED",
   "SETTINGS_UPDATED",
+  "PRIVACY_SETTINGS_UPDATED",
   "SESSION_INVALIDATED",
   "SESSION_DELETED",
   "PASSKEY_ADDED",

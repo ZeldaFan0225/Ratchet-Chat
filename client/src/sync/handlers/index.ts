@@ -13,6 +13,9 @@ export type {
 export { SettingsSyncHandler } from "./SettingsSyncHandler"
 export type { Settings, SettingsApplyFn } from "./SettingsSyncHandler"
 
+export { PrivacySettingsSyncHandler } from "./PrivacySettingsSyncHandler"
+export type { PrivacySettingsApplyFn } from "./PrivacySettingsSyncHandler"
+
 export { SessionSyncHandler } from "./SessionSyncHandler"
 export type {
   SessionInvalidatedFn,

@@ -38,6 +38,7 @@ import {
 } from "@/components/ui/sidebar"
 import { SettingsDialog } from "@/components/SettingsDialog"
 import { ContactsDialog } from "@/components/ContactsDialog"
+import { useSettings } from "@/hooks/useSettings"
 
 export function NavUser({
   user,
@@ -52,8 +53,13 @@ export function NavUser({
 }) {
   const { isMobile } = useSidebar()
   const { setTheme, theme } = useTheme()
+  const { settings } = useSettings()
   const [showSettings, setShowSettings] = React.useState(false)
   const [showContacts, setShowContacts] = React.useState(false)
+
+  const avatarUrl = settings.avatarFilename 
+    ? `${process.env.NEXT_PUBLIC_API_URL}/uploads/avatars/${settings.avatarFilename}`
+    : (user.avatar || undefined)
 
   return (
     <>
@@ -68,7 +74,7 @@ export function NavUser({
                 className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground md:h-8 md:p-0"
               >
                 <Avatar className="h-8 w-8">
-                  <AvatarImage src={user.avatar} alt={user.name} />
+                  <AvatarImage src={avatarUrl} alt={user.name} />
                   <AvatarFallback>
                     {user.name.slice(0, 2).toUpperCase()}
                   </AvatarFallback>
@@ -89,7 +95,7 @@ export function NavUser({
               <DropdownMenuLabel className="p-0 font-normal">
                 <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
                   <Avatar className="h-8 w-8">
-                    <AvatarImage src={user.avatar} alt={user.name} />
+                    <AvatarImage src={avatarUrl} alt={user.name} />
                     <AvatarFallback>
                       {user.name.slice(0, 2).toUpperCase()}
                     </AvatarFallback>

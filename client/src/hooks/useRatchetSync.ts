@@ -4,7 +4,8 @@ import * as React from "react"
 import { io } from "socket.io-client"
 import { useAuth } from "@/context/AuthContext"
 import { useBlock } from "@/context/BlockContext"
-import { useSettings } from "@/hooks/useSettings"
+import { useSettings } from "@/context/SettingsContext"
+import { useContacts } from "@/context/ContactsContext"
 import { apiFetch, getAuthToken } from "@/lib/api"
 import { CONTACT_TRANSPORT_KEY_UPDATED_EVENT } from "@/lib/events"
 import { decodeContactRecord, saveContactRecord } from "@/lib/messageUtils"
@@ -143,6 +144,7 @@ type DirectoryEntry = {
   host: string
   public_identity_key: string
   public_transport_key: string
+  display_name?: string | null
 }
 
 type ReceiptEventStatus = "PROCESSED_BY_CLIENT" | "READ_BY_USER"
@@ -181,6 +183,7 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
   } = useAuth()
   const { isBlocked } = useBlock()
   const { settings } = useSettings()
+  const { contacts } = useContacts()
   const isSyncingRef = React.useRef(false)
   const directoryCacheRef = React.useRef(new Map<string, DirectoryEntry>())
   const processedIdsRef = React.useRef(new Set<string>())
@@ -685,6 +688,7 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
         }
         const ownerId = user.id ?? user.handle
         const handleParts = splitHandle(senderHandle)
+        const trimmedDisplayName = directoryEntry?.display_name?.trim() ?? ""
         const existingRecord = await db.contacts.get(senderHandle)
         const existingContact = existingRecord
           ? await decodeContactRecord(existingRecord, masterKey)
@@ -692,9 +696,10 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
         const nextContact: Contact = {
           handle: senderHandle,
           username:
-            existingContact?.username ??
-            handleParts?.username ??
-            senderHandle,
+            trimmedDisplayName.length > 0
+              ? trimmedDisplayName
+              : handleParts?.username ?? existingContact?.username ?? senderHandle,
+          nickname: existingContact?.nickname,
           host: existingContact?.host ?? handleParts?.host ?? "",
           publicIdentityKey:
             existingContact?.publicIdentityKey ??
@@ -716,6 +721,7 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
                 inlineIdentityKey ??
                 nextContact.publicIdentityKey,
               public_transport_key: payloadRotationKey,
+              display_name: trimmedDisplayName.length > 0 ? trimmedDisplayName : undefined,
             })
           }
           if (typeof window !== "undefined") {
@@ -771,7 +777,53 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
         return
       }
 
+      // Message acceptance filtering based on privacy settings
+      // Note: Only applies to new messages, not edits/reactions/deletions
+      const isNewMessage = payloadType === "message"
+      let isMessageRequest = false
+
+      if (isNewMessage && senderHandle) {
+        // Check if sender is in contacts
+        const isFromContact = contacts.some(
+          (c) => c.handle.toLowerCase() === senderHandle.toLowerCase()
+        )
+
+        // Check if we've messaged them before (existing conversation)
+        const ownerId = user?.id ?? user?.handle ?? ""
+        const hasExistingConversation = ownerId
+          ? await db.messages
+              .where("[ownerId+peerHandle]")
+              .equals([ownerId, senderHandle])
+              .first()
+              .then(Boolean)
+          : false
+
+        // Determine if message should be accepted based on settings
+        const canAcceptMessage =
+          settings.messageAcceptance === "everybody" ||
+          (settings.messageAcceptance === "contacts" && isFromContact) ||
+          (settings.messageAcceptance === "none" && hasExistingConversation)
+
+        if (!canAcceptMessage) {
+          if (settings.enableMessageRequests) {
+            // Accept as message request
+            isMessageRequest = true
+          } else {
+            // Strict mode: ACK and discard without processing
+            try {
+              await apiFetch(`/messages/queue/${item.id}/ack`, { method: "POST" })
+            } catch {
+              // Best-effort ACK
+            }
+            return
+          }
+        }
+      }
+
       const handleParts = senderHandle ? splitHandle(senderHandle) : null
+      const trimmedDisplayName = directoryEntry?.display_name?.trim() ?? ""
+      const peerUsername =
+        trimmedDisplayName.length > 0 ? trimmedDisplayName : handleParts?.username
       const vaultPayload = await encryptString(
         masterKey,
         JSON.stringify({
@@ -781,7 +833,7 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
               : payload.content,
           attachments: payload.attachments,
           peerHandle: senderHandle,
-          peerUsername: handleParts?.username,
+          peerUsername,
           peerHost: handleParts?.host,
           peerIdentityKey,
           peerTransportKey,
@@ -836,27 +888,40 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
         isRead: false,
         vaultSynced: true,
         createdAt: stored.created_at ?? item.created_at,
+        isMessageRequest,  // Privacy: mark as request if not from allowed sender
       })
 
+      // Send processed receipt based on sendReadReceiptsTo setting
       if (
         payloadType === "message" &&
         senderHandle &&
         peerTransportKey &&
-        payloadMessageId
+        payloadMessageId &&
+        !isMessageRequest  // Don't send receipts for message requests
       ) {
-        try {
-          await sendReceiptEvent({
-            recipientHandle: senderHandle,
-            recipientTransportKey: peerTransportKey,
-            messageId: payloadMessageId,
-            status: "PROCESSED_BY_CLIENT",
-            timestamp: new Date().toISOString(),
-          })
-        } catch {
-          // Receipts are best-effort.
+        // Check if we should send receipts to this sender
+        const isFromContact = contacts.some(
+          (c) => c.handle.toLowerCase() === senderHandle.toLowerCase()
+        )
+        const shouldSendReceipt =
+          settings.sendReadReceiptsTo === "everybody" ||
+          (settings.sendReadReceiptsTo === "contacts" && isFromContact)
+
+        if (shouldSendReceipt) {
+          try {
+            await sendReceiptEvent({
+              recipientHandle: senderHandle,
+              recipientTransportKey: peerTransportKey,
+              messageId: payloadMessageId,
+              status: "PROCESSED_BY_CLIENT",
+              timestamp: new Date().toISOString(),
+            })
+          } catch {
+            // Receipts are best-effort.
+          }
         }
       }
-      
+
       bumpLastSync()
     },
     [
@@ -865,11 +930,14 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
       user?.id,
       user?.handle,
       sendReceiptEvent,
-      settings.sendReadReceipts,
+      settings.messageAcceptance,
+      settings.enableMessageRequests,
+      settings.sendReadReceiptsTo,
       updateMessageTimestamps,
       onCallMessage,
       bumpLastSync,
       isBlocked,
+      contacts,
     ]
   )
 

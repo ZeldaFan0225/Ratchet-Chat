@@ -3,7 +3,7 @@
 import * as React from "react"
 import { Ban, Download, MoreVertical, Phone, Search, Trash2, UserPlus, Video } from "lucide-react"
 
-import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { SidebarTrigger } from "@/components/ui/sidebar"
+import { getContactDisplayName, getContactInitials } from "@/lib/contacts"
 import type { Contact } from "@/types/dashboard"
 
 type ChatHeaderProps = {
@@ -50,6 +51,11 @@ export function ChatHeader({
   onStartCall,
   isCallDisabled = false,
 }: ChatHeaderProps) {
+  const displayName = activeContact
+    ? getContactDisplayName(activeContact)
+    : "Select a chat"
+  const initials = activeContact ? getContactInitials(activeContact) : ""
+
   return (
     <header className="flex flex-none items-center gap-3 border-b bg-background/85 px-5 py-4 backdrop-blur">
       <SidebarTrigger className="-ml-1" />
@@ -58,15 +64,18 @@ export function ChatHeader({
         onClick={() => activeContact && onShowRecipientInfo()}
       >
         {activeContact && (
-          <Avatar className="h-10 w-10 bg-emerald-600 text-white">
+          <Avatar className="h-10 w-10 border">
+            {activeContact.avatar_filename ? (
+              <AvatarImage src={`${process.env.NEXT_PUBLIC_API_URL}/uploads/avatars/${activeContact.avatar_filename}`} />
+            ) : null}
             <AvatarFallback>
-              {activeContact.username.slice(0, 2).toUpperCase()}
+              {initials}
             </AvatarFallback>
           </Avatar>
         )}
         <div className="flex-1">
           <p className="text-sm font-semibold">
-            {activeContact?.username ?? "Select a chat"}
+            {displayName}
           </p>
           {activeContact ? (
             activeContact.handle && typingStatus[activeContact.handle] ? (

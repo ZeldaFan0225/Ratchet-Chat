@@ -1,10 +1,12 @@
 "use client"
 
 import * as React from "react"
-import { Ban, ChevronRight, Copy, Eye, EyeOff, Fingerprint, Key, Lock, LogOut, Monitor, Plus, Server, Shield, Trash2, User } from "lucide-react"
+import { Ban, Camera, ChevronLeft, ChevronRight, Copy, Eye, EyeOff, Fingerprint, Key, Lock, LogOut, Monitor, Plus, Server, Shield, Trash2, User, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { apiFetch } from "@/lib/api"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import {
   Dialog,
   DialogContent,
@@ -75,7 +77,154 @@ function formatKeyPreview(key: string, head = 18, tail = 14): string {
   return `${key.slice(0, head)}...${key.slice(-tail)}`
 }
 
-type SettingsPage = "privacy" | "access" | "security" | "blocking"
+const MAX_AVATAR_SIZE = 200 * 1024
+const MAX_AVATAR_DIMENSION = 512
+const MIN_AVATAR_DIMENSION = 128
+const AVATAR_QUALITY_STEP = 0.1
+const MIN_AVATAR_QUALITY = 0.5
+const AVATAR_DIMENSION_STEP = 0.85
+
+function loadImageFromFile(file: File): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file)
+    const img = new Image()
+    img.onload = () => {
+      URL.revokeObjectURL(url)
+      resolve(img)
+    }
+    img.onerror = () => {
+      URL.revokeObjectURL(url)
+      reject(new Error("Failed to load image"))
+    }
+    img.src = url
+  })
+}
+
+function canvasToBlob(
+  canvas: HTMLCanvasElement,
+  type: string,
+  quality: number
+): Promise<Blob | null> {
+  return new Promise((resolve) => {
+    canvas.toBlob((blob) => resolve(blob), type, quality)
+  })
+}
+
+function getCompressedType(mimeType: string): string {
+  if (mimeType === "image/png" || mimeType === "image/webp") {
+    return "image/webp"
+  }
+  return "image/jpeg"
+}
+
+function getCompressedFilename(originalName: string, outputType: string): string {
+  const base = originalName.replace(/\.[^/.]+$/, "") || "avatar"
+  const ext = outputType === "image/webp" ? "webp" : "jpg"
+  return `${base}.${ext}`
+}
+
+async function renderAvatarBlob(
+  image: HTMLImageElement,
+  canvas: HTMLCanvasElement,
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  outputType: string,
+  quality: number
+): Promise<{ blob: Blob; type: string } | null> {
+  canvas.width = width
+  canvas.height = height
+  ctx.clearRect(0, 0, width, height)
+  ctx.drawImage(image, 0, 0, width, height)
+
+  let blob = await canvasToBlob(canvas, outputType, quality)
+  let type = outputType
+
+  if (!blob && outputType !== "image/jpeg") {
+    const fallback = await canvasToBlob(canvas, "image/jpeg", quality)
+    if (fallback) {
+      blob = fallback
+      type = "image/jpeg"
+    }
+  }
+
+  if (!blob) {
+    return null
+  }
+
+  return { blob, type }
+}
+
+async function compressAvatarImage(
+  file: File,
+  maxSize: number
+): Promise<File> {
+  const image = await loadImageFromFile(file)
+  const width = image.naturalWidth || image.width
+  const height = image.naturalHeight || image.height
+
+  if (!width || !height) {
+    throw new Error("Invalid image dimensions")
+  }
+
+  const scale = Math.min(1, MAX_AVATAR_DIMENSION / Math.max(width, height))
+  let targetWidth = Math.max(1, Math.round(width * scale))
+  let targetHeight = Math.max(1, Math.round(height * scale))
+  let outputType = getCompressedType(file.type)
+
+  const canvas = document.createElement("canvas")
+  const ctx = canvas.getContext("2d")
+  if (!ctx) {
+    throw new Error("Canvas not available")
+  }
+  ctx.imageSmoothingQuality = "high"
+
+  let dimensionAttempts = 0
+  while (dimensionAttempts < 6) {
+    for (
+      let quality = 0.9;
+      quality >= MIN_AVATAR_QUALITY;
+      quality -= AVATAR_QUALITY_STEP
+    ) {
+      const rendered = await renderAvatarBlob(
+        image,
+        canvas,
+        ctx,
+        targetWidth,
+        targetHeight,
+        outputType,
+        quality
+      )
+      if (!rendered) {
+        continue
+      }
+      outputType = rendered.type
+      if (rendered.blob.size <= maxSize) {
+        return new File([rendered.blob], getCompressedFilename(file.name, outputType), {
+          type: outputType,
+        })
+      }
+    }
+
+    if (Math.max(targetWidth, targetHeight) <= MIN_AVATAR_DIMENSION) {
+      break
+    }
+
+    targetWidth = Math.max(
+      MIN_AVATAR_DIMENSION,
+      Math.round(targetWidth * AVATAR_DIMENSION_STEP)
+    )
+    targetHeight = Math.max(
+      MIN_AVATAR_DIMENSION,
+      Math.round(targetHeight * AVATAR_DIMENSION_STEP)
+    )
+    dimensionAttempts += 1
+  }
+
+  throw new Error("Unable to compress image below size limit")
+}
+
+type SettingsPage = "personalization" | "privacy" | "access" | "security" | "blocking"
 
 export function SettingsDialog({
   open,
@@ -90,6 +239,15 @@ export function SettingsDialog({
   const { settings, updateSettings } = useSettings()
   const { subscribe } = useSync()
   const isInActiveCall = callState.status !== "idle" && callState.status !== "ended"
+  const avatarUrl = settings.avatarFilename
+    ? `${process.env.NEXT_PUBLIC_API_URL}/uploads/avatars/${settings.avatarFilename}`
+    : undefined
+  const displayNameFallback =
+    settings.displayName?.trim() || user?.username || user?.handle || "User"
+  const avatarFallbackText = displayNameFallback.slice(0, 2).toUpperCase()
+  const [displayNameInput, setDisplayNameInput] = React.useState(
+    settings.displayName ?? ""
+  )
   const [showKey, setShowKey] = React.useState(false)
   const [deleteConfirm, setDeleteConfirm] = React.useState("")
   const [deleteError, setDeleteError] = React.useState<string | null>(null)
@@ -123,6 +281,21 @@ export function SettingsDialog({
 
   const deleteLabel = user?.handle ?? user?.username ?? ""
   const isDeleteMatch = deleteLabel !== "" && deleteConfirm.trim() === deleteLabel
+
+  React.useEffect(() => {
+    setDisplayNameInput(settings.displayName ?? "")
+  }, [settings.displayName])
+
+  const commitDisplayName = React.useCallback(() => {
+    const trimmed = displayNameInput.trim()
+    const nextValue = trimmed.length > 0 ? trimmed : null
+    if ((settings.displayName ?? null) !== nextValue) {
+      void updateSettings({ displayName: nextValue })
+    }
+    if (displayNameInput !== trimmed) {
+      setDisplayNameInput(trimmed)
+    }
+  }, [displayNameInput, settings.displayName, updateSettings])
 
   // Fetch sessions when dialog opens
   const loadSessions = React.useCallback(async () => {
@@ -356,6 +529,12 @@ export function SettingsDialog({
 
   const settingsPages = [
     {
+      id: "personalization",
+      title: "Personalization",
+      description: "Profile picture and appearance.",
+      icon: User,
+    },
+    {
       id: "privacy",
       title: "Privacy",
       description: "Control what others can see.",
@@ -394,44 +573,282 @@ export function SettingsDialog({
     : "Manage your privacy and security preferences."
 
   const settingsPageContent: Record<SettingsPage, React.ReactNode> = {
-    privacy: (
+    personalization: (
       <div className="space-y-6 py-4">
-        <div className="space-y-1">
-          <h3 className="text-sm font-medium">Messaging</h3>
-          <p className="text-xs text-muted-foreground">
-            Choose what activity details others can see.
-          </p>
-        </div>
-        <div className="flex items-center justify-between space-x-2">
+        {/* Profile Picture */}
+        <div className="space-y-4">
           <div className="space-y-1">
-            <Label htmlFor="typing" className="text-base">Typing Indicator</Label>
+            <h3 className="text-sm font-medium">Profile Picture</h3>
             <p className="text-xs text-muted-foreground">
-              Show others when you are typing.
+              Add a picture so others can recognize you.
             </p>
           </div>
-          <Switch
-            id="typing"
-            checked={settings.showTypingIndicator}
-            onCheckedChange={(checked) =>
-              updateSettings({ showTypingIndicator: checked })
-            }
-          />
+          <div className="rounded-md border border-muted-foreground/20 bg-muted/40 p-2 text-[10px] text-muted-foreground">
+            Note: profile pictures and display names are stored unencrypted. If set to public,
+            they are public-public.
+          </div>
+          
+          <div className="flex items-center gap-6">
+            <div className="relative group">
+              <Avatar className="h-20 w-20 border">
+                <AvatarImage key={avatarUrl ?? "empty"} src={avatarUrl} />
+                <AvatarFallback className="text-xl">
+                  {avatarFallbackText}
+                </AvatarFallback>
+              </Avatar>
+              <label 
+                htmlFor="avatar-upload" 
+                className="absolute inset-0 flex items-center justify-center bg-black/40 text-white rounded-full opacity-0 group-hover:opacity-100 cursor-pointer transition-opacity"
+              >
+                <Camera className="h-6 w-6" />
+                <input 
+                  id="avatar-upload" 
+                  type="file" 
+                  className="hidden" 
+                  accept="image/jpeg,image/png,image/webp"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+
+                    let uploadFile = file
+                    if (file.size > MAX_AVATAR_SIZE) {
+                      try {
+                        uploadFile = await compressAvatarImage(file, MAX_AVATAR_SIZE)
+                      } catch (error) {
+                        console.error("Failed to compress avatar:", error)
+                        alert("File is too large to upload. Please choose a smaller image.")
+                        return
+                      }
+                    }
+
+                    const formData = new FormData();
+                    formData.append("avatar", uploadFile);
+
+                    try {
+                      const response = await apiFetch<{ filename: string }>("/auth/avatar", {
+                        method: "POST",
+                        body: formData,
+                        // Note: apiFetch will handle the form data correctly if it sees FormData
+                      });
+                      void updateSettings({ avatarFilename: response.filename });
+                    } catch (err) {
+                      alert("Failed to upload avatar.");
+                    }
+                  }}
+                />
+              </label>
+            </div>
+            
+            <div className="flex-1 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label className="text-sm">Visibility</Label>
+                  <p className="text-[10px] text-muted-foreground">
+                    Show your picture to others.
+                  </p>
+                </div>
+                <Switch 
+                  checked={settings.avatarVisibility === "public"}
+                  onCheckedChange={async (checked) => {
+                    const visibility = checked ? "public" : "hidden";
+                    await apiFetch("/auth/avatar/visibility", {
+                      method: "PATCH",
+                      body: { visibility }
+                    });
+                    void updateSettings({ avatarVisibility: visibility });
+                  }}
+                />
+              </div>
+              
+              {settings.avatarFilename && (
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  className="text-destructive hover:text-destructive h-8 text-[10px]"
+                  onClick={async () => {
+                    if (confirm("Remove profile picture?")) {
+                      await apiFetch("/auth/avatar", { method: "DELETE" });
+                      void updateSettings({ avatarFilename: null });
+                    }
+                  }}
+                >
+                  <Trash2 className="h-3 w-3 mr-1" />
+                  Remove Picture
+                </Button>
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="display-name">Display Name</Label>
+            <p className="text-[10px] text-muted-foreground">
+              Optional name for your own UI. Syncs across devices.
+            </p>
+            <Input
+              id="display-name"
+              value={displayNameInput}
+              maxLength={64}
+              placeholder={user?.username ?? "Your name"}
+              onChange={(event) => setDisplayNameInput(event.target.value)}
+              onBlur={commitDisplayName}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault()
+                  commitDisplayName()
+                  event.currentTarget.blur()
+                }
+              }}
+            />
+            <div className="flex items-center justify-between gap-4 pt-1">
+              <div className="space-y-0.5">
+                <Label className="text-xs">Visibility</Label>
+                <p className="text-[10px] text-muted-foreground">
+                  Show your display name to others.
+                </p>
+              </div>
+              <Switch
+                checked={settings.displayNameVisibility === "public"}
+                onCheckedChange={(checked) => {
+                  void updateSettings({
+                    displayNameVisibility: checked ? "public" : "hidden",
+                  })
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+    ),
+    privacy: (
+      <div className="space-y-6 py-4">
+        {/* Message Acceptance */}
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <h3 className="text-sm font-medium">Who can message you</h3>
+            <p className="text-xs text-muted-foreground">
+              Control who can start new conversations with you.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {[
+              { value: "everybody", label: "Everybody" },
+              { value: "contacts", label: "My Contacts" },
+              { value: "none", label: "Nobody" },
+            ].map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                className={cn(
+                  "rounded-lg border px-3 py-2 text-sm transition-colors",
+                  settings.messageAcceptance === opt.value
+                    ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                    : "border-border hover:bg-muted"
+                )}
+                onClick={() =>
+                  updateSettings({ messageAcceptance: opt.value as "everybody" | "contacts" | "none" })
+                }
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {settings.messageAcceptance === "everybody" && "Anyone can start a conversation with you."}
+            {settings.messageAcceptance === "contacts" && "Only people in your contacts can message you first."}
+            {settings.messageAcceptance === "none" && "You must message someone first before they can reply."}
+          </p>
         </div>
 
-        <div className="flex items-center justify-between space-x-2">
+        {/* Message Requests */}
+        {settings.messageAcceptance !== "everybody" && (
+          <div className="flex items-center justify-between space-x-2 rounded-lg border border-dashed border-amber-300 bg-amber-50/50 p-3 dark:border-amber-700 dark:bg-amber-950/30">
+            <div className="space-y-1">
+              <Label htmlFor="requests" className="text-base">Message Requests</Label>
+              <p className="text-xs text-muted-foreground">
+                When enabled, messages from non-contacts appear in a separate inbox for review instead of being blocked.
+              </p>
+            </div>
+            <Switch
+              id="requests"
+              checked={settings.enableMessageRequests}
+              onCheckedChange={(checked) =>
+                updateSettings({ enableMessageRequests: checked })
+              }
+            />
+          </div>
+        )}
+
+        <Separator />
+
+        {/* Typing Indicator */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between space-x-2">
+            <div className="space-y-1">
+              <Label htmlFor="typing" className="text-base">Typing Indicator</Label>
+              <p className="text-xs text-muted-foreground">
+                Show others when you are typing.
+              </p>
+            </div>
+            <Switch
+              id="typing"
+              checked={settings.showTypingIndicator}
+              onCheckedChange={(checked) =>
+                updateSettings({ showTypingIndicator: checked })
+              }
+            />
+          </div>
+          {settings.showTypingIndicator && (
+            <div className="ml-4 flex items-center justify-between space-x-2 border-l-2 border-muted pl-4">
+              <div className="space-y-1">
+                <Label htmlFor="typing-contacts" className="text-sm text-muted-foreground">Contacts only</Label>
+                <p className="text-xs text-muted-foreground">
+                  Only show typing indicator to your contacts.
+                </p>
+              </div>
+              <Switch
+                id="typing-contacts"
+                checked={settings.showTypingToContactsOnly}
+                onCheckedChange={(checked) =>
+                  updateSettings({ showTypingToContactsOnly: checked })
+                }
+              />
+            </div>
+          )}
+        </div>
+
+        <Separator />
+
+        {/* Read Receipts */}
+        <div className="space-y-3">
           <div className="space-y-1">
-            <Label htmlFor="receipts" className="text-base">Read Receipts</Label>
+            <Label className="text-base">Read Receipts</Label>
             <p className="text-xs text-muted-foreground">
               Let others know when you have read their messages.
             </p>
           </div>
-          <Switch
-            id="receipts"
-            checked={settings.sendReadReceipts}
-            onCheckedChange={(checked) =>
-              updateSettings({ sendReadReceipts: checked })
-            }
-          />
+          <div className="flex flex-wrap gap-2">
+            {[
+              { value: "everybody", label: "Everybody" },
+              { value: "contacts", label: "Contacts only" },
+              { value: "nobody", label: "Nobody" },
+            ].map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                className={cn(
+                  "rounded-lg border px-3 py-2 text-sm transition-colors",
+                  settings.sendReadReceiptsTo === opt.value
+                    ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                    : "border-border hover:bg-muted"
+                )}
+                onClick={() =>
+                  updateSettings({ sendReadReceiptsTo: opt.value as "everybody" | "contacts" | "nobody" })
+                }
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
     ),

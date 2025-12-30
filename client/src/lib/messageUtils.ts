@@ -1,6 +1,7 @@
 import { decryptString, encryptString } from "@/lib/crypto"
 import { splitHandle } from "@/lib/handles"
 import { db, type MessageRecord, type ContactRecord } from "@/lib/db"
+import { normalizeNickname } from "@/lib/contacts"
 import type { Contact, StoredMessage, Attachment, ReactionSummary } from "@/types/dashboard"
 
 export const DELETE_SIGNATURE_BODY = "ratchet-chat:delete"
@@ -27,9 +28,14 @@ export async function decodeContactRecord(
     return {
       handle: payload.handle,
       username: payload.username ?? parts?.username ?? payload.handle,
+      nickname: normalizeNickname(payload.nickname),
       host: payload.host ?? parts?.host ?? "",
       publicIdentityKey: payload.publicIdentityKey ?? "",
       publicTransportKey: payload.publicTransportKey ?? "",
+      avatar_filename:
+        typeof payload.avatar_filename === "string" || payload.avatar_filename === null
+          ? payload.avatar_filename
+          : undefined,
       createdAt: record.createdAt,
     }
   } catch {
@@ -47,9 +53,11 @@ export async function saveContactRecord(
     JSON.stringify({
       handle: contact.handle,
       username: contact.username,
+      nickname: normalizeNickname(contact.nickname),
       host: contact.host,
       publicIdentityKey: contact.publicIdentityKey,
       publicTransportKey: contact.publicTransportKey,
+      avatar_filename: contact.avatar_filename ?? null,
     })
   )
   await db.contacts.put({
@@ -180,6 +188,7 @@ export async function decodeMessageRecord(
         verified: record.verified,
         isRead,
         messageId,
+        isMessageRequest: record.isMessageRequest ?? false,
       }
     }
     const isReaction = payload.type === "reaction"
@@ -239,6 +248,7 @@ export async function decodeMessageRecord(
       verified: record.verified,
       isRead,
       messageId,
+      isMessageRequest: record.isMessageRequest ?? false,
     }
   } catch {
     return null

@@ -6,6 +6,7 @@ import TextareaAutosize from "react-textarea-autosize"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import { getContactDisplayName } from "@/lib/contacts"
 import type { StoredMessage } from "@/types/dashboard"
 import { truncateText, getReplyPreviewText } from "@/lib/messageUtils"
 
@@ -20,6 +21,7 @@ type ComposeAreaProps = {
   activeContact: {
     handle: string
     username: string
+    nickname?: string | null
   } | null
   composeText: string
   onComposeTextChange: (text: string) => void
@@ -165,7 +167,7 @@ export function ComposeArea({
               editingMessage
                 ? "Edit message"
                 : activeContact
-                ? `Message ${activeContact.username}`
+                ? `Message ${getContactDisplayName(activeContact)}`
                 : "Select a chat to start messaging"
             }
             className="flex-1 min-h-[40px] max-h-[200px] w-full resize-none border-none bg-transparent py-2.5 px-0 text-sm shadow-none focus-visible:ring-0 outline-none"

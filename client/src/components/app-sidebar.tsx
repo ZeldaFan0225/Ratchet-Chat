@@ -1,9 +1,10 @@
 "use client"
 
 import * as React from "react"
-import { Search, Settings, ShieldCheck, UserPlus } from "lucide-react"
+import { ChevronDown, Inbox, Search, Settings, ShieldCheck, UserPlus } from "lucide-react"
 
 import { useAuth } from "@/context/AuthContext"
+import { useSettings } from "@/hooks/useSettings"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -25,6 +26,11 @@ import { cn } from "@/lib/utils"
 import { NavUser } from "@/components/nav-user"
 import { getInstanceHost } from "@/lib/handles"
 import { AppInfoDialog } from "@/components/AppInfoDialog"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
 
 export type ConversationPreview = {
   id: string
@@ -34,13 +40,15 @@ export type ConversationPreview = {
   lastMessage: string
   lastTimestamp: string
   unread: number
-  status: "online" | "offline" | "away"
   avatar?: string
+  avatarUrl?: string
   foundMessageId?: string
+  isMessageRequest?: boolean
 }
 
 type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
   conversations: ConversationPreview[]
+  messageRequests: ConversationPreview[]
   activeId: string
   onSelectConversation: (id: string, messageId?: string) => void
   onStartChat: (handle: string) => void
@@ -53,6 +61,7 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
 
 export function AppSidebar({
   conversations,
+  messageRequests,
   activeId,
   onSelectConversation,
   onStartChat,
@@ -64,10 +73,16 @@ export function AppSidebar({
   ...props
 }: AppSidebarProps) {
   const { user } = useAuth()
+  const { settings } = useSettings()
   const { isMobile, setOpenMobile } = useSidebar()
   const [newChat, setNewChat] = React.useState("")
+  const [requestsOpen, setRequestsOpen] = React.useState(true)
   const instanceHost = getInstanceHost()
   const trimmedNewChat = newChat.trim()
+  const requestCount = messageRequests.length
+  const totalUnreadRequests = messageRequests.reduce((sum, r) => sum + r.unread, 0)
+  const displayName =
+    settings.displayName?.trim() || user?.username || user?.handle || "User"
 
   return (
     <Sidebar collapsible="offcanvas" className="border-r bg-sidebar" {...props}>
@@ -130,11 +145,91 @@ export function AppSidebar({
         ) : null}
       </SidebarHeader>
       <SidebarContent className="px-2">
+        {requestCount > 0 && (
+          <Collapsible
+            open={requestsOpen}
+            onOpenChange={setRequestsOpen}
+            className="group/requests"
+          >
+            <CollapsibleTrigger className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted/60 transition group-data-[collapsible=icon]:hidden">
+              <div className="flex items-center gap-2">
+                <Inbox className="h-4 w-4 text-amber-500" />
+                <span>Message Requests</span>
+                {totalUnreadRequests > 0 && (
+                  <span className="min-w-[20px] rounded-full bg-amber-500 px-1.5 py-0.5 text-center text-[10px] font-semibold text-white">
+                    {totalUnreadRequests}
+                  </span>
+                )}
+              </div>
+              <ChevronDown
+                className={cn(
+                  "h-4 w-4 transition-transform",
+                  requestsOpen && "rotate-180"
+                )}
+              />
+            </CollapsibleTrigger>
+            <CollapsibleContent className="group-data-[collapsible=icon]:hidden">
+              <SidebarMenu className="max-w-full mt-1">
+                {messageRequests.map((request) => (
+                  <SidebarMenuItem key={request.uid}>
+                    <SidebarMenuButton
+                      className="h-auto w-full overflow-hidden items-start gap-3 rounded-xl px-3 py-3 border border-dashed border-amber-300 dark:border-amber-700 bg-amber-50/50 dark:bg-amber-950/20 data-[active=true]:bg-amber-100 dark:data-[active=true]:bg-amber-900/30 data-[active=true]:border-amber-400"
+                      isActive={activeId === request.id}
+                      onClick={() => {
+                        onSelectConversation(request.id, request.foundMessageId)
+                        if (isMobile) {
+                          setOpenMobile(false)
+                        }
+                      }}
+                    >
+                      <div className="relative mt-0.5 shrink-0">
+                        <Avatar className="h-10 w-10">
+                          <AvatarImage src={request.avatarUrl || request.avatar || undefined} />
+                          <AvatarFallback>
+                            {request.name.slice(0, 2).toUpperCase()}
+                          </AvatarFallback>
+                        </Avatar>
+                      </div>
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="flex items-center justify-between gap-2 min-w-0">
+                          <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                            <p className="truncate text-sm font-semibold">
+                              {request.name}
+                            </p>
+                            <span className="shrink-0 rounded bg-amber-500 px-1.5 py-0.5 text-[9px] font-semibold text-white uppercase">
+                              Request
+                            </span>
+                          </div>
+                          <span className="shrink-0 text-[11px] text-muted-foreground">
+                            {request.lastTimestamp}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2 min-w-0">
+                          <p
+                            className="truncate text-xs text-muted-foreground flex-1"
+                            title={request.lastMessage}
+                          >
+                            {request.lastMessage}
+                          </p>
+                          {request.unread > 0 && (
+                            <span className="shrink-0 min-w-[20px] rounded-full bg-amber-500 px-1.5 py-0.5 text-center text-[10px] font-semibold text-white">
+                              {request.unread}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </CollapsibleContent>
+          </Collapsible>
+        )}
         <SidebarGroup>
           <SidebarGroupContent>
             <ScrollArea className="h-[calc(100svh-220px)] pr-2 w-full">
               <SidebarMenu className="max-w-full">
-                {conversations.length === 0 ? (
+                {conversations.length === 0 && messageRequests.length === 0 ? (
                   <SidebarMenuItem>
                     <div className="rounded-xl border border-dashed border-border p-4 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
                       {searchQuery
@@ -157,19 +252,11 @@ export function AppSidebar({
                       >
                         <div className="relative mt-0.5 shrink-0">
                           <Avatar className="h-10 w-10">
-                            <AvatarImage src={conversation.avatar ?? ""} />
+                            <AvatarImage src={conversation.avatarUrl || conversation.avatar || undefined} />
                             <AvatarFallback>
                               {conversation.name.slice(0, 2).toUpperCase()}
                             </AvatarFallback>
                           </Avatar>
-                          <span
-                            className={cn(
-                              "absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full",
-                              conversation.status === "online" && "bg-emerald-500",
-                              conversation.status === "away" && "bg-amber-400",
-                              conversation.status === "offline" && "bg-slate-300"
-                            )}
-                          />
                         </div>
                         <div className="min-w-0 flex-1 space-y-1 group-data-[collapsible=icon]:hidden">
                           <div className="flex items-center justify-between gap-2 min-w-0">
@@ -207,7 +294,7 @@ export function AppSidebar({
       <SidebarFooter className="border-t p-2">
         <NavUser
           user={{
-            name: user?.username ?? "User",
+            name: displayName,
             email: user?.handle ?? "user@ratchet",
             avatar: "",
           }}

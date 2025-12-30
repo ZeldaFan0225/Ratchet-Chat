@@ -4,6 +4,8 @@ import { PrismaClient } from "@prisma/client";
 import { createServer as createHttpServer } from "http";
 import { createServer as createHttpsServer } from "https";
 import { Server as SocketIOServer } from "socket.io";
+import path from "path";
+import fs from "fs";
 
 import { createAuthRouter } from "./routes/auth";
 import { createDirectoryRouter } from "./routes/directory";
@@ -268,6 +270,12 @@ app.use((req, res, next) => {
   return corsMiddleware(req, res, next);
 });
 app.use(express.json({ limit: "20mb" }));
+
+const AVATAR_DIR = path.join(process.cwd(), "uploads", "avatars");
+if (!fs.existsSync(AVATAR_DIR)) {
+  fs.mkdirSync(AVATAR_DIR, { recursive: true });
+}
+app.use("/uploads/avatars", express.static(AVATAR_DIR));
 
 app.get("/health", (_req, res) => {
   res.json({

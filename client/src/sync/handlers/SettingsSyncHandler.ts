@@ -8,6 +8,8 @@ import { validateSyncEvent } from "../validation"
 export type Settings = {
   showTypingIndicator: boolean
   sendReadReceipts: boolean
+  displayName: string | null
+  displayNameVisibility: "public" | "hidden"
 }
 
 export type SettingsApplyFn = (updates: Partial<Settings>) => void
@@ -48,6 +50,12 @@ export class SettingsSyncHandler
     }
     if (event.sendReadReceipts !== undefined) {
       updates.sendReadReceipts = event.sendReadReceipts
+    }
+    if (event.displayName !== undefined) {
+      updates.displayName = event.displayName
+    }
+    if (event.displayNameVisibility !== undefined) {
+      updates.displayNameVisibility = event.displayNameVisibility
     }
 
     if (Object.keys(updates).length > 0) {

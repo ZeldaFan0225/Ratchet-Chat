@@ -13,7 +13,11 @@ import {
 } from "@/components/ui/dialog"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
+import { useContacts } from "@/context/ContactsContext"
+import { getContactDisplayName, normalizeNickname } from "@/lib/contacts"
 import type { Contact } from "@/types/dashboard"
 
 export function RecipientInfoDialog({
@@ -32,15 +36,27 @@ export function RecipientInfoDialog({
   onRemoveContact?: (contact: Contact) => void
 }) {
   const [showIdentityKey, setShowIdentityKey] = React.useState(false)
+  const { contacts, addContact } = useContacts()
+  const [nicknameInput, setNicknameInput] = React.useState(contact?.nickname ?? "")
 
   React.useEffect(() => {
     if (!contact) {
       return
     }
     setShowIdentityKey(false)
-  }, [contact?.handle, open])
+    setNicknameInput(contact.nickname ?? "")
+  }, [contact?.handle, contact?.nickname, open])
 
   if (!contact) return null
+
+  const isSavedContact = contacts.some(
+    (entry) => entry.handle.toLowerCase() === contact.handle.toLowerCase()
+  )
+  const normalizedNickname = normalizeNickname(nicknameInput)
+  const displayName = getContactDisplayName({
+    ...contact,
+    nickname: normalizedNickname ?? null,
+  })
 
   const formatKeyPreview = (key: string, head = 18, tail = 14) => {
     if (!key) return "Unavailable"
@@ -48,6 +64,29 @@ export function RecipientInfoDialog({
     return `${key.slice(0, head)}...${key.slice(-tail)}`
   }
   const identityKeyPreview = formatKeyPreview(contact.publicIdentityKey)
+  const avatarInitials = displayName.slice(0, 2).toUpperCase()
+
+  const commitNickname = React.useCallback(() => {
+    if (!isSavedContact) return
+    const nextNickname = normalizedNickname ?? null
+    const currentNickname = normalizeNickname(contact.nickname) ?? null
+    if (nextNickname === currentNickname) {
+      if (nicknameInput !== (nextNickname ?? "")) {
+        setNicknameInput(nextNickname ?? "")
+      }
+      return
+    }
+    void addContact({ ...contact, nickname: nextNickname })
+    if (nicknameInput !== (nextNickname ?? "")) {
+      setNicknameInput(nextNickname ?? "")
+    }
+  }, [
+    addContact,
+    contact,
+    isSavedContact,
+    nicknameInput,
+    normalizedNickname,
+  ])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -61,18 +100,48 @@ export function RecipientInfoDialog({
         
         <div className="flex flex-col items-center gap-4 py-4">
           <Avatar className="h-24 w-24">
-            <AvatarImage src="" />
+            <AvatarImage 
+              src={contact.avatar_filename 
+                ? `${process.env.NEXT_PUBLIC_API_URL}/uploads/avatars/${contact.avatar_filename}` 
+                : undefined
+              } 
+            />
             <AvatarFallback className="text-2xl bg-emerald-600 text-white">
-              {contact.username.slice(0, 2).toUpperCase()}
+              {avatarInitials}
             </AvatarFallback>
           </Avatar>
           
           <div className="text-center space-y-1">
-            <h3 className="text-xl font-semibold">{contact.username}</h3>
+            <h3 className="text-xl font-semibold">{displayName}</h3>
             <p className="text-sm text-muted-foreground">{contact.handle}</p>
           </div>
 
           <div className="w-full space-y-4 mt-2">
+            {isSavedContact && (
+              <div className="space-y-2">
+                <Label htmlFor="contact-nickname" className="text-xs uppercase text-muted-foreground">
+                  Nickname
+                </Label>
+                <Input
+                  id="contact-nickname"
+                  value={nicknameInput}
+                  placeholder="Add a private nickname"
+                  maxLength={64}
+                  onChange={(event) => setNicknameInput(event.target.value)}
+                  onBlur={commitNickname}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault()
+                      commitNickname()
+                      event.currentTarget.blur()
+                    }
+                  }}
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  Stored encrypted with your contacts. Only visible to you.
+                </p>
+              </div>
+            )}
             <div className="rounded-lg border bg-muted/50 p-4">
               <div className="mb-3 flex items-center justify-between">
                 <div className="flex items-center gap-2">

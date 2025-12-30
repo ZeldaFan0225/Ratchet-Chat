@@ -5,6 +5,7 @@ import { apiFetch } from "@/lib/api"
 import { db } from "@/lib/db"
 import { decryptString, encryptString, type EncryptedPayload } from "@/lib/crypto"
 import { normalizeHandle, splitHandle } from "@/lib/handles"
+import { getContactDisplayName, normalizeNickname } from "@/lib/contacts"
 import { decodeContactRecord, saveContactRecord } from "@/lib/messageUtils"
 import type { Contact } from "@/types/dashboard"
 import { useAuth } from "./AuthContext"
@@ -32,12 +33,15 @@ const ContactsContext = React.createContext<ContactsContextValue | undefined>(
 function normalizeContact(contact: Contact): Contact {
   const handle = normalizeHandle(contact.handle)
   const parts = splitHandle(handle)
+  const normalizedNickname = normalizeNickname(contact.nickname)
   return {
     handle: parts?.handle ?? handle,
     username: contact.username || parts?.username || handle,
+    nickname: normalizedNickname,
     host: contact.host || parts?.host || "",
     publicIdentityKey: contact.publicIdentityKey ?? "",
     publicTransportKey: contact.publicTransportKey ?? "",
+    avatar_filename: contact.avatar_filename,
     createdAt: contact.createdAt,
   }
 }
@@ -54,10 +58,16 @@ function mergeContact(existing: Contact, incoming: Contact): Contact {
   return {
     handle: incoming.handle || existing.handle,
     username: incoming.username || existing.username,
+    nickname:
+      incoming.nickname !== undefined ? incoming.nickname : existing.nickname,
     host: incoming.host || existing.host,
     publicIdentityKey: incoming.publicIdentityKey || existing.publicIdentityKey,
     publicTransportKey:
       incoming.publicTransportKey || existing.publicTransportKey,
+    avatar_filename:
+      incoming.avatar_filename !== undefined
+        ? incoming.avatar_filename
+        : existing.avatar_filename,
     createdAt,
   }
 }
@@ -75,7 +85,7 @@ function mergeContacts(base: Contact[], incoming: Contact[]): Contact[] {
     map.set(key, existing ? mergeContact(existing, normalized) : normalized)
   }
   return Array.from(map.values()).sort((a, b) =>
-    (a.username || a.handle).localeCompare(b.username || b.handle)
+    getContactDisplayName(a).localeCompare(getContactDisplayName(b))
   )
 }
 
@@ -84,9 +94,11 @@ function contactsEqual(a: Contact[], b: Contact[]): boolean {
   const normalizeForCompare = (contact: Contact) => ({
     handle: contact.handle,
     username: contact.username ?? "",
+    nickname: normalizeNickname(contact.nickname) ?? "",
     host: contact.host ?? "",
     publicIdentityKey: contact.publicIdentityKey ?? "",
     publicTransportKey: contact.publicTransportKey ?? "",
+    avatar_filename: contact.avatar_filename ?? "",
   })
   const sorted = (contacts: Contact[]) =>
     [...contacts]
@@ -178,12 +190,14 @@ export function ContactsProvider({ children }: { children: React.ReactNode }) {
         handle?: string
         public_identity_key: string
         public_transport_key: string
+        display_name?: string | null
       }>(`/api/directory?handle=${encodeURIComponent(normalizedHandle)}`)
       const handle = entry.handle ?? normalizedHandle
       const handleParts = splitHandle(handle) ?? parts
+      const trimmedDisplayName = entry.display_name?.trim() ?? ""
       const contact: Contact = {
         handle,
-        username: handleParts.username,
+        username: trimmedDisplayName.length > 0 ? trimmedDisplayName : handleParts.username,
         host: handleParts.host,
         publicIdentityKey: entry.public_identity_key,
         publicTransportKey: entry.public_transport_key,

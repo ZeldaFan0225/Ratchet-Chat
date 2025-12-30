@@ -17,6 +17,7 @@ export type MessageRecord = {
   createdAt: string
   isRead?: boolean
   vaultSynced?: boolean
+  isMessageRequest?: boolean  // Client-side only, not synced to server
 }
 
 export class RatchetDB extends Dexie {
@@ -106,6 +107,24 @@ export class RatchetDB extends Dexie {
       auth: "&username",
       syncState: "&key",
     })
+    // Add isMessageRequest for privacy filtering (client-side only, not synced to server)
+    this.version(10)
+      .stores({
+        messages: "&id, ownerId, senderId, peerHandle, createdAt, isRead, vaultSynced, isMessageRequest, [ownerId+peerHandle], [ownerId+isMessageRequest]",
+        contacts: "&id, ownerId, createdAt",
+        auth: "&username",
+        syncState: "&key",
+      })
+      .upgrade((tx) =>
+        tx
+          .table<MessageRecord, string>("messages")
+          .toCollection()
+          .modify((message) => {
+            if (message.isMessageRequest === undefined) {
+              message.isMessageRequest = false
+            }
+          })
+      )
   }
 }
 

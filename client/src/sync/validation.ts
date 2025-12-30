@@ -9,6 +9,7 @@ import type {
   ContactsUpdatedEvent,
   TransportKeyRotatedEvent,
   SettingsUpdatedEvent,
+  PrivacySettingsUpdatedEvent,
   SessionInvalidatedEvent,
   SessionDeletedEvent,
   PasskeyAddedEvent,
@@ -131,12 +132,29 @@ function validateSettingsUpdated(
   const hasReadReceipts =
     payload.sendReadReceipts === undefined ||
     isBoolean(payload.sendReadReceipts)
+  const hasDisplayName =
+    payload.displayName === undefined || isStringOrNull(payload.displayName)
+  const hasDisplayNameVisibility =
+    payload.displayNameVisibility === undefined ||
+    payload.displayNameVisibility === "public" ||
+    payload.displayNameVisibility === "hidden"
   return (
     hasTypingIndicator &&
     hasReadReceipts &&
+    hasDisplayName &&
+    hasDisplayNameVisibility &&
     (payload.showTypingIndicator !== undefined ||
-      payload.sendReadReceipts !== undefined)
+      payload.sendReadReceipts !== undefined ||
+      payload.displayName !== undefined ||
+      payload.displayNameVisibility !== undefined)
   )
+}
+
+function validatePrivacySettingsUpdated(
+  payload: unknown
+): payload is Omit<PrivacySettingsUpdatedEvent, "type"> {
+  if (!isObject(payload)) return false
+  return isString(payload.ciphertext) && isString(payload.iv)
 }
 
 function validateSessionInvalidated(
@@ -193,6 +211,7 @@ const validators: Record<
   CONTACTS_UPDATED: validateContactsUpdated,
   TRANSPORT_KEY_ROTATED: validateTransportKeyRotated,
   SETTINGS_UPDATED: validateSettingsUpdated,
+  PRIVACY_SETTINGS_UPDATED: validatePrivacySettingsUpdated,
   SESSION_INVALIDATED: validateSessionInvalidated,
   SESSION_DELETED: validateSessionDeleted,
   PASSKEY_ADDED: validatePasskeyAdded,

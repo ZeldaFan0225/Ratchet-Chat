@@ -9,6 +9,7 @@ import {
   FileIcon,
   Info,
   PencilLine,
+  ShieldAlert,
   ShieldCheck,
   SmilePlus,
   Trash2,
@@ -156,42 +157,63 @@ export function MessageBubble({
                 )}
               </div>
             ) : null}
-            {message.attachments?.map((att, i) => (
+            {message.isMessageRequest && message.attachments?.length ? (
               <div
-                key={i}
-                className="mb-2 rounded-lg overflow-hidden"
+                className="mb-2 rounded-lg overflow-hidden border border-dashed border-amber-300 bg-amber-50/50 dark:border-amber-700 dark:bg-amber-950/30 p-4"
                 data-no-action-toggle="true"
               >
-                {att.mimeType.startsWith("image/") ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={`data:${att.mimeType};base64,${att.data}`}
-                    alt={att.filename}
-                    className="max-w-full h-auto max-h-64 object-cover cursor-pointer hover:opacity-90 transition-opacity"
-                    onClick={() =>
-                      onPreviewImage(`data:${att.mimeType};base64,${att.data}`)
-                    }
-                  />
-                ) : (
-                  <a
-                    href={`data:${att.mimeType};base64,${att.data}`}
-                    download={att.filename}
-                    className="flex items-center gap-2 p-3 bg-background/50 rounded-lg hover:bg-background/80 transition-colors"
-                  >
-                    <div className="p-2 bg-emerald-500/10 rounded-md">
-                      <FileIcon className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium truncate">{att.filename}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {(att.size / 1024).toFixed(1)} KB
-                      </p>
-                    </div>
-                    <Download className="h-4 w-4 text-muted-foreground" />
-                  </a>
-                )}
+                <div className="flex items-center gap-3 text-amber-700 dark:text-amber-300">
+                  <ShieldAlert className="h-5 w-5 shrink-0" />
+                  <div className="text-xs">
+                    <p className="font-medium">
+                      {message.attachments.length === 1
+                        ? "1 attachment hidden"
+                        : `${message.attachments.length} attachments hidden`}
+                    </p>
+                    <p className="text-amber-600 dark:text-amber-400">
+                      Accept this request to view
+                    </p>
+                  </div>
+                </div>
               </div>
-            ))}
+            ) : (
+              message.attachments?.map((att, i) => (
+                <div
+                  key={i}
+                  className="mb-2 rounded-lg overflow-hidden"
+                  data-no-action-toggle="true"
+                >
+                  {att.mimeType.startsWith("image/") ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={`data:${att.mimeType};base64,${att.data}`}
+                      alt={att.filename}
+                      className="max-w-full h-auto max-h-64 object-cover cursor-pointer hover:opacity-90 transition-opacity"
+                      onClick={() =>
+                        onPreviewImage(`data:${att.mimeType};base64,${att.data}`)
+                      }
+                    />
+                  ) : (
+                    <a
+                      href={`data:${att.mimeType};base64,${att.data}`}
+                      download={att.filename}
+                      className="flex items-center gap-2 p-3 bg-background/50 rounded-lg hover:bg-background/80 transition-colors"
+                    >
+                      <div className="p-2 bg-emerald-500/10 rounded-md">
+                        <FileIcon className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium truncate">{att.filename}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {(att.size / 1024).toFixed(1)} KB
+                        </p>
+                      </div>
+                      <Download className="h-4 w-4 text-muted-foreground" />
+                    </a>
+                  )}
+                </div>
+              ))
+            )}
             {message.text && (
               <div className="whitespace-pre-wrap prose prose-sm dark:prose-invert prose-emerald max-w-none prose-p:leading-relaxed prose-pre:bg-muted prose-pre:p-2 prose-pre:rounded-md prose-code:text-emerald-600 dark:prose-code:text-emerald-400 break-words [word-break:break-word]">
                 <ReactMarkdown

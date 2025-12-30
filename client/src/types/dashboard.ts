@@ -8,9 +8,11 @@ export type Attachment = {
 export type Contact = {
   handle: string
   username: string
+  nickname?: string | null
   host: string
   publicIdentityKey: string
   publicTransportKey: string
+  avatar_filename?: string | null
   createdAt?: string
 }
 
@@ -49,6 +51,7 @@ export type StoredMessage = {
   verified: boolean
   isRead: boolean
   messageId?: string
+  isMessageRequest?: boolean
 }
 
 export type DirectoryEntry = {
@@ -57,4 +60,6 @@ export type DirectoryEntry = {
   host: string
   public_identity_key: string
   public_transport_key: string
+  display_name?: string | null
+  avatar_filename?: string | null
 }
