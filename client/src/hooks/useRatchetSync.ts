@@ -798,11 +798,20 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
               .then(Boolean)
           : false
 
+        // Check if sender is from the same server
+        const senderParts = senderHandle ? splitHandle(senderHandle) : null
+        const userParts = user?.handle ? splitHandle(user.handle) : null
+        const isFromSameServer =
+          senderParts?.host && userParts?.host
+            ? senderParts.host.toLowerCase() === userParts.host.toLowerCase()
+            : false
+
         // Determine if message should be accepted based on settings
         const canAcceptMessage =
           settings.messageAcceptance === "everybody" ||
+          (settings.messageAcceptance === "same_server" && isFromSameServer) ||
           (settings.messageAcceptance === "contacts" && isFromContact) ||
-          (settings.messageAcceptance === "none" && hasExistingConversation)
+          (settings.messageAcceptance === "nobody" && hasExistingConversation)
 
         if (!canAcceptMessage) {
           if (settings.enableMessageRequests) {
@@ -903,8 +912,15 @@ export function useRatchetSync(options: UseRatchetSyncOptions = {}) {
         const isFromContact = contacts.some(
           (c) => c.handle.toLowerCase() === senderHandle.toLowerCase()
         )
+        const receiptSenderParts = splitHandle(senderHandle)
+        const receiptUserParts = user?.handle ? splitHandle(user.handle) : null
+        const isReceiptFromSameServer =
+          receiptSenderParts?.host && receiptUserParts?.host
+            ? receiptSenderParts.host.toLowerCase() === receiptUserParts.host.toLowerCase()
+            : false
         const shouldSendReceipt =
           settings.sendReadReceiptsTo === "everybody" ||
+          (settings.sendReadReceiptsTo === "same_server" && isReceiptFromSameServer) ||
           (settings.sendReadReceiptsTo === "contacts" && isFromContact)
 
         if (shouldSendReceipt) {

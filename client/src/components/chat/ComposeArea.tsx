@@ -84,9 +84,10 @@ export function ComposeArea({
           </div>
           <Button
             variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-emerald-700 hover:text-emerald-900 dark:text-emerald-200 dark:hover:text-emerald-50"
+            size="icon-sm"
+            className="text-emerald-700 hover:text-emerald-900 dark:text-emerald-200 dark:hover:text-emerald-50"
             onClick={onCancelEdit}
+            title="Cancel editing"
           >
             <X className="h-4 w-4" />
           </Button>
@@ -102,9 +103,10 @@ export function ComposeArea({
           </div>
           <Button
             variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-emerald-700 hover:text-emerald-900 dark:text-emerald-200 dark:hover:text-emerald-50"
+            size="icon-sm"
+            className="text-emerald-700 hover:text-emerald-900 dark:text-emerald-200 dark:hover:text-emerald-50"
             onClick={onCancelReply}
+            title="Cancel reply"
           >
             <X className="h-4 w-4" />
           </Button>
@@ -136,9 +138,10 @@ export function ComposeArea({
           </div>
           <Button
             variant="ghost"
-            size="icon"
-            className="h-8 w-8 text-muted-foreground hover:text-destructive"
+            size="icon-sm"
+            className="text-muted-foreground hover:text-destructive"
             onClick={onRemoveAttachment}
+            title="Remove attachment"
           >
             <X className="h-4 w-4" />
           </Button>
@@ -203,7 +206,8 @@ export function ComposeArea({
             disabled={!activeContact || isBusy}
           />
           <Button
-            className="bg-emerald-600 text-white hover:bg-emerald-600/90 shrink-0 mb-1"
+            variant="accept"
+            className="shrink-0 mb-1"
             disabled={
               (!composeText.trim() && (!attachment || Boolean(editingMessage))) ||
               !activeContact ||

@@ -845,11 +845,23 @@ export function DashboardLayout() {
   }, [messageRequestHandles, messagesByPeer, isBlocked])
 
   const handleTyping = React.useCallback(async () => {
-    if (!settings.showTypingIndicator || !activeContact || !socket || !activeContact.publicTransportKey) return
+    if (!activeContact || !socket || !activeContact.publicTransportKey) return
 
-    // If contacts-only mode is enabled, check if recipient is a contact
-    if (settings.showTypingToContactsOnly && !isSavedContact(activeContact.handle)) {
-      return
+    // Check if we should send typing indicator based on scope
+    const scope = settings.typingIndicatorScope
+    if (scope === "nobody") return
+
+    const isContact = isSavedContact(activeContact.handle)
+    if (scope === "contacts" && !isContact) return
+
+    if (scope === "same_server") {
+      const userParts = user?.handle ? splitHandle(user.handle) : null
+      const recipientParts = splitHandle(activeContact.handle)
+      const isSameServer =
+        userParts?.host && recipientParts?.host
+          ? userParts.host.toLowerCase() === recipientParts.host.toLowerCase()
+          : false
+      if (!isSameServer) return
     }
 
     // Clear existing timeout
@@ -884,7 +896,7 @@ export function DashboardLayout() {
        })
        typingTimeoutRef.current = null
     }, 2000)
-  }, [activeContact, settings.showTypingIndicator, settings.showTypingToContactsOnly, socket, isSavedContact])
+  }, [activeContact, settings.typingIndicatorScope, socket, isSavedContact, user?.handle])
 
   // Effect 1: Handle scrolling to a specific message
   React.useEffect(() => {
@@ -2122,7 +2134,7 @@ export function DashboardLayout() {
       clearTimeout(typingTimeoutRef.current)
       typingTimeoutRef.current = null
     }
-    if (settings.showTypingIndicator && socket && activeContact.publicTransportKey) {
+    if (settings.typingIndicatorScope !== "nobody" && socket && activeContact.publicTransportKey) {
       const stopTypingPayload = JSON.stringify({ type: "typing", status: false })
       encryptTransitEnvelope(stopTypingPayload, activeContact.publicTransportKey).then(blob => {
         socket.emit("signal", {
@@ -2887,7 +2899,7 @@ export function DashboardLayout() {
                           <div className="flex flex-wrap items-center gap-2">
                             <Button
                               size="sm"
-                              className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                              variant="accept"
                               onClick={() => void handleAcceptRequest(addToContactsOnAccept)}
                             >
                               <Check className="h-3.5 w-3.5 mr-1.5" />
@@ -2895,8 +2907,7 @@ export function DashboardLayout() {
                             </Button>
                             <Button
                               size="sm"
-                              variant="outline"
-                              className="border-red-300 text-red-600 hover:bg-red-50 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-950/50"
+                              variant="destructive"
                               onClick={() => setShowBlockConfirm(true)}
                             >
                               <Ban className="h-3.5 w-3.5 mr-1.5" />
@@ -2905,7 +2916,6 @@ export function DashboardLayout() {
                             <Button
                               size="sm"
                               variant="outline"
-                              className="border-muted-foreground/30"
                               onClick={() => void handleDeleteRequest()}
                             >
                               <Trash2 className="h-3.5 w-3.5 mr-1.5" />

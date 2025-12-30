@@ -29,9 +29,11 @@ import { useBlock } from "@/context/BlockContext"
 import { useCall } from "@/context/CallContext"
 import { useSync } from "@/context/SyncContext"
 import { useSettings } from "@/hooks/useSettings"
+import type { PrivacyScope, MessageAcceptance } from "@/context/SettingsContext"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 
 function parseDeviceInfo(userAgent: string | null): string {
@@ -661,10 +663,10 @@ export function SettingsDialog({
               </div>
               
               {settings.avatarFilename && (
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  className="text-destructive hover:text-destructive h-8 text-[10px]"
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="h-8 text-[10px]"
                   onClick={async () => {
                     if (confirm("Remove profile picture?")) {
                       await apiFetch("/auth/avatar", { method: "DELETE" });
@@ -724,48 +726,36 @@ export function SettingsDialog({
         {/* Message Acceptance */}
         <div className="space-y-3">
           <div className="space-y-1">
-            <h3 className="text-sm font-medium">Who can message you</h3>
+            <Label className="text-base">Who can message you</Label>
             <p className="text-xs text-muted-foreground">
               Control who can start new conversations with you.
             </p>
           </div>
-          <div className="flex flex-wrap gap-2">
-            {[
-              { value: "everybody", label: "Everybody" },
-              { value: "contacts", label: "My Contacts" },
-              { value: "none", label: "Nobody" },
-            ].map((opt) => (
-              <button
-                key={opt.value}
-                type="button"
-                className={cn(
-                  "rounded-lg border px-3 py-2 text-sm transition-colors",
-                  settings.messageAcceptance === opt.value
-                    ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
-                    : "border-border hover:bg-muted"
-                )}
-                onClick={() =>
-                  updateSettings({ messageAcceptance: opt.value as "everybody" | "contacts" | "none" })
-                }
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-          <p className="text-xs text-muted-foreground">
-            {settings.messageAcceptance === "everybody" && "Anyone can start a conversation with you."}
-            {settings.messageAcceptance === "contacts" && "Only people in your contacts can message you first."}
-            {settings.messageAcceptance === "none" && "You must message someone first before they can reply."}
-          </p>
+          <Select
+            value={settings.messageAcceptance}
+            onValueChange={(value: MessageAcceptance) =>
+              updateSettings({ messageAcceptance: value })
+            }
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="everybody">Everybody</SelectItem>
+              <SelectItem value="same_server">Users from this server</SelectItem>
+              <SelectItem value="contacts">My contacts only</SelectItem>
+              <SelectItem value="nobody">Nobody (you message first)</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
 
         {/* Message Requests */}
         {settings.messageAcceptance !== "everybody" && (
           <div className="flex items-center justify-between space-x-2 rounded-lg border border-dashed border-amber-300 bg-amber-50/50 p-3 dark:border-amber-700 dark:bg-amber-950/30">
             <div className="space-y-1">
-              <Label htmlFor="requests" className="text-base">Message Requests</Label>
+              <Label htmlFor="requests" className="text-sm">Message Requests</Label>
               <p className="text-xs text-muted-foreground">
-                When enabled, messages from non-contacts appear in a separate inbox for review instead of being blocked.
+                Messages from others appear in a separate inbox for review instead of being blocked.
               </p>
             </div>
             <Switch
@@ -782,38 +772,28 @@ export function SettingsDialog({
 
         {/* Typing Indicator */}
         <div className="space-y-3">
-          <div className="flex items-center justify-between space-x-2">
-            <div className="space-y-1">
-              <Label htmlFor="typing" className="text-base">Typing Indicator</Label>
-              <p className="text-xs text-muted-foreground">
-                Show others when you are typing.
-              </p>
-            </div>
-            <Switch
-              id="typing"
-              checked={settings.showTypingIndicator}
-              onCheckedChange={(checked) =>
-                updateSettings({ showTypingIndicator: checked })
-              }
-            />
+          <div className="space-y-1">
+            <Label className="text-base">Typing Indicator</Label>
+            <p className="text-xs text-muted-foreground">
+              Show others when you are typing a message.
+            </p>
           </div>
-          {settings.showTypingIndicator && (
-            <div className="ml-4 flex items-center justify-between space-x-2 border-l-2 border-muted pl-4">
-              <div className="space-y-1">
-                <Label htmlFor="typing-contacts" className="text-sm text-muted-foreground">Contacts only</Label>
-                <p className="text-xs text-muted-foreground">
-                  Only show typing indicator to your contacts.
-                </p>
-              </div>
-              <Switch
-                id="typing-contacts"
-                checked={settings.showTypingToContactsOnly}
-                onCheckedChange={(checked) =>
-                  updateSettings({ showTypingToContactsOnly: checked })
-                }
-              />
-            </div>
-          )}
+          <Select
+            value={settings.typingIndicatorScope}
+            onValueChange={(value: PrivacyScope) =>
+              updateSettings({ typingIndicatorScope: value })
+            }
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="everybody">Everybody</SelectItem>
+              <SelectItem value="same_server">Users from this server</SelectItem>
+              <SelectItem value="contacts">My contacts only</SelectItem>
+              <SelectItem value="nobody">Nobody</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
 
         <Separator />
@@ -826,29 +806,22 @@ export function SettingsDialog({
               Let others know when you have read their messages.
             </p>
           </div>
-          <div className="flex flex-wrap gap-2">
-            {[
-              { value: "everybody", label: "Everybody" },
-              { value: "contacts", label: "Contacts only" },
-              { value: "nobody", label: "Nobody" },
-            ].map((opt) => (
-              <button
-                key={opt.value}
-                type="button"
-                className={cn(
-                  "rounded-lg border px-3 py-2 text-sm transition-colors",
-                  settings.sendReadReceiptsTo === opt.value
-                    ? "border-emerald-500 bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
-                    : "border-border hover:bg-muted"
-                )}
-                onClick={() =>
-                  updateSettings({ sendReadReceiptsTo: opt.value as "everybody" | "contacts" | "nobody" })
-                }
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
+          <Select
+            value={settings.sendReadReceiptsTo}
+            onValueChange={(value: PrivacyScope) =>
+              updateSettings({ sendReadReceiptsTo: value })
+            }
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="everybody">Everybody</SelectItem>
+              <SelectItem value="same_server">Users from this server</SelectItem>
+              <SelectItem value="contacts">My contacts only</SelectItem>
+              <SelectItem value="nobody">Nobody</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
       </div>
     ),
@@ -887,8 +860,7 @@ export function SettingsDialog({
                   </div>
                   <Button
                     variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 text-destructive hover:text-destructive"
+                    size="icon-sm"
                     onClick={() => handleRemovePasskey(passkey.credentialId)}
                     disabled={removingPasskeyId === passkey.credentialId || passkeys.length <= 1}
                     title={passkeys.length <= 1 ? "Cannot remove last passkey" : "Remove passkey"}
@@ -919,6 +891,7 @@ export function SettingsDialog({
               />
             </div>
             <Button
+              variant="accept"
               onClick={handleAddPasskey}
               disabled={addingPasskey}
               className="w-full"
@@ -975,8 +948,7 @@ export function SettingsDialog({
                   {!session.isCurrent && (
                     <Button
                       variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 text-destructive hover:text-destructive"
+                      size="icon-sm"
                       onClick={() => handleInvalidateSession(session.id)}
                       disabled={invalidatingSessionId === session.id}
                       title="Log out this session"
@@ -1031,7 +1003,7 @@ export function SettingsDialog({
                 <Button
                   variant="outline"
                   size="icon"
-                  className="h-9 w-9 bg-background shadow-sm"
+                  className="bg-background shadow-sm"
                   onClick={() => setShowKey(!showKey)}
                   title={showKey ? "Hide full key" : "View full key"}
                 >
@@ -1044,7 +1016,7 @@ export function SettingsDialog({
                 <Button
                   variant="outline"
                   size="icon"
-                  className="h-9 w-9 bg-background shadow-sm"
+                  className="bg-background shadow-sm"
                   onClick={() => navigator.clipboard.writeText(identityKey)}
                   title="Copy key"
                 >
@@ -1118,7 +1090,7 @@ export function SettingsDialog({
               </p>
             </div>
             <Button
-              variant="destructive"
+              variant="nuclear"
               className="shrink-0"
               disabled={!isDeleteMatch || isDeleting}
               onClick={handleDeleteAccount}
@@ -1171,8 +1143,8 @@ export function SettingsDialog({
                   <span className="text-sm font-mono">{handle}</span>
                   <Button
                     variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                    size="icon-sm"
+                    className="text-muted-foreground hover:text-foreground"
                     onClick={() => unblockUser(handle)}
                     title="Unblock user"
                   >
@@ -1223,8 +1195,8 @@ export function SettingsDialog({
                   <span className="text-sm font-mono">@{server}</span>
                   <Button
                     variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                    size="icon-sm"
+                    className="text-muted-foreground hover:text-foreground"
                     onClick={() => unblockServer(server)}
                     title="Unblock server"
                   >

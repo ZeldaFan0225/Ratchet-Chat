@@ -165,7 +165,7 @@ export function RecipientInfoDialog({
                   <Button
                     variant="outline"
                     size="icon"
-                    className="h-9 w-9 bg-background shadow-sm shrink-0"
+                    className="bg-background shadow-sm shrink-0"
                     onClick={() => setShowIdentityKey(!showIdentityKey)}
                     title={showIdentityKey ? "Hide full key" : "View full key"}
                   >
@@ -178,7 +178,7 @@ export function RecipientInfoDialog({
                   <Button
                     variant="outline"
                     size="icon"
-                    className="h-9 w-9 bg-background shadow-sm shrink-0"
+                    className="bg-background shadow-sm shrink-0"
                     onClick={() => navigator.clipboard.writeText(contact.publicIdentityKey)}
                     title="Copy key"
                   >
@@ -210,7 +210,7 @@ export function RecipientInfoDialog({
                 <div className="flex flex-col gap-2">
                   {onAddContact && (
                     <Button
-                      variant="outline"
+                      variant="accept"
                       onClick={() => onAddContact(contact)}
                     >
                       <UserPlus className="mr-2 h-4 w-4" />
@@ -228,7 +228,7 @@ export function RecipientInfoDialog({
                   )}
                   {onRemoveContact && (
                     <Button
-                      variant="outline"
+                      variant="destructive"
                       onClick={() => onRemoveContact(contact)}
                     >
                       <Trash2 className="mr-2 h-4 w-4" />

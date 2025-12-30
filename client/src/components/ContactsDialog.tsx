@@ -256,7 +256,7 @@ export function ContactsDialog({
                 onKeyDown={(event) => event.key === "Enter" && handleAddContact()}
                 disabled={isAdding}
               />
-              <Button onClick={handleAddContact} disabled={isAdding}>
+              <Button variant="accept" onClick={handleAddContact} disabled={isAdding}>
                 <Plus className="mr-2 h-4 w-4" />
                 {isAdding ? "Adding..." : "Add Contact"}
               </Button>
@@ -327,8 +327,7 @@ export function ContactsDialog({
                             <div className="ml-3 flex items-center gap-1">
                               <Button
                                 variant="ghost"
-                                size="icon"
-                                className="h-8 w-8"
+                                size="icon-sm"
                                 onClick={() => handleSendMessage(contact)}
                                 title="Send message"
                               >
@@ -336,8 +335,7 @@ export function ContactsDialog({
                               </Button>
                               <Button
                                 variant="ghost"
-                                size="icon"
-                                className="h-8 w-8"
+                                size="icon-sm"
                                 onClick={() => handleRemoveContact(contact)}
                                 title="Remove from contacts"
                               >
@@ -345,8 +343,7 @@ export function ContactsDialog({
                               </Button>
                               <Button
                                 variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-destructive hover:text-destructive"
+                                size="icon-sm"
                                 onClick={() => handleBlockContact(contact)}
                                 title="Block user"
                               >

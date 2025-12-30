@@ -96,7 +96,7 @@ export function CallControls({
         )}
 
         <Button
-          variant="destructive"
+          variant="nuclear"
           size="icon-lg"
           onClick={onEndCall}
           className="rounded-full"

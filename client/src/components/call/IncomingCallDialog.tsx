@@ -67,7 +67,7 @@ export function IncomingCallDialog({
 
         <div className="flex justify-center gap-6 mt-6">
           <Button
-            variant="destructive"
+            variant="nuclear"
             size="icon-lg"
             onClick={onReject}
             className="rounded-full size-14"
@@ -77,9 +77,10 @@ export function IncomingCallDialog({
           </Button>
 
           <Button
+            variant="accept"
             size="icon-lg"
             onClick={handleAccept}
-            className="rounded-full size-14 bg-green-600 hover:bg-green-700"
+            className="rounded-full size-14"
             title="Accept"
           >
             {isVideo ? <Video className="size-6" /> : <Phone className="size-6" />}

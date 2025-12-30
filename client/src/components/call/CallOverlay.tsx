@@ -571,7 +571,7 @@ export function CallOverlay({
               </Button>
               {status !== "ended" && (
                 <Button
-                  variant="destructive"
+                  variant="nuclear"
                   size="icon-sm"
                   className="h-7 w-7"
                   onClick={(e) => {
@@ -657,7 +657,7 @@ export function CallOverlay({
               <div className="flex gap-1">
                 {status !== "ended" && (
                   <Button
-                    variant="destructive"
+                    variant="nuclear"
                     size="icon-sm"
                     className="h-7 w-7"
                     onClick={(e) => {
@@ -677,11 +677,11 @@ export function CallOverlay({
                   onClick={(e) => {
                        e.stopPropagation(); // Prevent drag start
                        setIsMinimized(false);
-                       setAnchor("BR"); 
+                       setAnchor("BR");
                        setPosition(null); // Reset position
                   }}
                   title="Maximize"
-                  onPointerDown={(e) => e.stopPropagation()} 
+                  onPointerDown={(e) => e.stopPropagation()}
                 >
                   <Maximize2 className="size-4" />
                 </Button>

@@ -7,8 +7,9 @@ import { apiFetch } from "@/lib/api"
 import { encryptString, decryptString, type EncryptedPayload } from "@/lib/crypto"
 import { db } from "@/lib/db"
 
-export type MessageAcceptance = "none" | "contacts" | "everybody"
-export type VisibilityScope = "everybody" | "contacts" | "nobody"
+export type PrivacyScope = "everybody" | "same_server" | "contacts" | "nobody"
+export type MessageAcceptance = "everybody" | "same_server" | "contacts" | "nobody"
+export type VisibilityScope = "everybody" | "contacts" | "nobody" // Legacy, kept for backwards compat
 
 // Legacy settings stored unencrypted on server (backwards compatible)
 type LegacySettings = {
@@ -27,8 +28,8 @@ type AvatarSettings = {
 type PrivacySettings = {
   messageAcceptance: MessageAcceptance
   enableMessageRequests: boolean
-  showTypingToContactsOnly: boolean
-  sendReadReceiptsTo: VisibilityScope
+  typingIndicatorScope: PrivacyScope
+  sendReadReceiptsTo: PrivacyScope
   avatarFilename?: string | null
   avatarVisibility?: "public" | "hidden"
 }
@@ -46,7 +47,7 @@ const DEFAULT_LEGACY_SETTINGS: LegacySettings = {
 const DEFAULT_PRIVACY_SETTINGS: PrivacySettings = {
   messageAcceptance: "everybody",
   enableMessageRequests: false,
-  showTypingToContactsOnly: false,
+  typingIndicatorScope: "everybody",
   sendReadReceiptsTo: "everybody",
 }
 
@@ -102,19 +103,33 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
 
         if (
           raw.messageAcceptance === "everybody" ||
+          raw.messageAcceptance === "same_server" ||
           raw.messageAcceptance === "contacts" ||
-          raw.messageAcceptance === "none"
+          raw.messageAcceptance === "nobody"
         ) {
           privacySettings.messageAcceptance = raw.messageAcceptance
+        } else if (raw.messageAcceptance === "none") {
+          // Migrate legacy "none" to "nobody"
+          privacySettings.messageAcceptance = "nobody"
         }
         if (typeof raw.enableMessageRequests === "boolean") {
           privacySettings.enableMessageRequests = raw.enableMessageRequests
         }
-        if (typeof raw.showTypingToContactsOnly === "boolean") {
-          privacySettings.showTypingToContactsOnly = raw.showTypingToContactsOnly
+        // Handle new typingIndicatorScope or migrate from legacy showTypingToContactsOnly
+        if (
+          raw.typingIndicatorScope === "everybody" ||
+          raw.typingIndicatorScope === "same_server" ||
+          raw.typingIndicatorScope === "contacts" ||
+          raw.typingIndicatorScope === "nobody"
+        ) {
+          privacySettings.typingIndicatorScope = raw.typingIndicatorScope
+        } else if (typeof raw.showTypingToContactsOnly === "boolean") {
+          // Migrate legacy boolean to new scope
+          privacySettings.typingIndicatorScope = raw.showTypingToContactsOnly ? "contacts" : "everybody"
         }
         if (
           raw.sendReadReceiptsTo === "everybody" ||
+          raw.sendReadReceiptsTo === "same_server" ||
           raw.sendReadReceiptsTo === "contacts" ||
           raw.sendReadReceiptsTo === "nobody"
         ) {
@@ -352,8 +367,8 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       if ("enableMessageRequests" in updates) {
         privacyUpdates.enableMessageRequests = updates.enableMessageRequests
       }
-      if ("showTypingToContactsOnly" in updates) {
-        privacyUpdates.showTypingToContactsOnly = updates.showTypingToContactsOnly
+      if ("typingIndicatorScope" in updates) {
+        privacyUpdates.typingIndicatorScope = updates.typingIndicatorScope
       }
       if ("sendReadReceiptsTo" in updates) {
         privacyUpdates.sendReadReceiptsTo = updates.sendReadReceiptsTo
@@ -380,7 +395,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
           const newPrivacySettings: PrivacySettings = {
             messageAcceptance: prev.messageAcceptance,
             enableMessageRequests: prev.enableMessageRequests,
-            showTypingToContactsOnly: prev.showTypingToContactsOnly,
+            typingIndicatorScope: prev.typingIndicatorScope,
             sendReadReceiptsTo: prev.sendReadReceiptsTo,
             avatarFilename: prev.avatarFilename ?? DEFAULT_AVATAR_SETTINGS.avatarFilename,
             avatarVisibility: prev.avatarVisibility ?? DEFAULT_AVATAR_SETTINGS.avatarVisibility,
