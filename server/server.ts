@@ -9,6 +9,7 @@ import fs from "fs";
 
 import { createAuthRouter } from "./routes/auth";
 import { createDirectoryRouter } from "./routes/directory";
+import { createEmbedRouter } from "./routes/embed";
 import { createMessagesRouter } from "./routes/messages";
 import { getJwtSecret, hashToken, type AuthenticatedUser } from "./middleware/auth";
 import {
@@ -293,6 +294,7 @@ app.get("/.well-known/ratchet-chat/federation.json", (req, res) => {
 app.use("/auth", createAuthRouter(prisma, io));
 app.use("/directory", createDirectoryRouter(prisma));
 app.use("/api/directory", createDirectoryRouter(prisma));
+app.use("/api/embed", createEmbedRouter());
 app.use("/", createMessagesRouter(prisma, io));
 
 app.use((req, res) => {

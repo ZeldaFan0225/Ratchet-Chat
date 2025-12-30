@@ -25,6 +25,10 @@ import {
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { formatMessageTime, truncateText, getReplyPreviewText } from "@/lib/messageUtils"
+import { extractUrl, isEmbeddable } from "@/lib/urlUtils"
+import { useEmbedPreview } from "@/hooks/useEmbedPreview"
+import { useSettings } from "@/hooks/useSettings"
+import { LinkEmbed, LinkEmbedSkeleton } from "@/components/chat/LinkEmbed"
 import type { StoredMessage } from "@/types/dashboard"
 
 type MessageBubbleProps = {
@@ -89,6 +93,18 @@ export function MessageBubble({
   const replyPreview = replyTarget
     ? truncateText(getReplyPreviewText(replyTarget), 90)
     : "Message deleted"
+
+  // Link embed preview
+  const { settings } = useSettings()
+  const embeddableUrl = React.useMemo(() => {
+    if (!message.text) return null
+    const url = extractUrl(message.text)
+    return url && isEmbeddable(url) ? url : null
+  }, [message.text])
+  const { data: embedData, isLoading: isEmbedLoading } = useEmbedPreview(
+    embeddableUrl,
+    settings.enableLinkPreviews
+  )
 
   return (
     <div
@@ -238,6 +254,17 @@ export function MessageBubble({
                   {message.text}
                 </ReactMarkdown>
               </div>
+            )}
+            {embeddableUrl && settings.enableLinkPreviews && (
+              isEmbedLoading ? (
+                <LinkEmbedSkeleton direction={message.direction} />
+              ) : embedData ? (
+                <LinkEmbed
+                  data={embedData}
+                  direction={message.direction}
+                  onLinkClick={onPendingLink}
+                />
+              ) : null
             )}
             <div
               className={cn(

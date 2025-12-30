@@ -7,6 +7,15 @@ export type ContactRecord = {
   createdAt: string
 }
 
+export type EmbedCacheRecord = {
+  url: string
+  title: string | null
+  description: string | null
+  image: string | null
+  siteName: string | null
+  cachedAt: number
+}
+
 export type MessageRecord = {
   id: string
   ownerId: string
@@ -25,6 +34,7 @@ export class RatchetDB extends Dexie {
   contacts!: Table<ContactRecord, string>
   auth!: Table<AuthRecord, string>
   syncState!: Table<SyncStateRecord, string>
+  embedCache!: Table<EmbedCacheRecord, string>
 
   constructor() {
     super("RatchetChat")
@@ -125,6 +135,14 @@ export class RatchetDB extends Dexie {
             }
           })
       )
+    // Add embedCache for link preview caching
+    this.version(11).stores({
+      messages: "&id, ownerId, senderId, peerHandle, createdAt, isRead, vaultSynced, isMessageRequest, [ownerId+peerHandle], [ownerId+isMessageRequest]",
+      contacts: "&id, ownerId, createdAt",
+      auth: "&username",
+      syncState: "&key",
+      embedCache: "&url, cachedAt",
+    })
   }
 }
 

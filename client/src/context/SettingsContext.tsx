@@ -32,6 +32,7 @@ type PrivacySettings = {
   sendReadReceiptsTo: PrivacyScope
   avatarFilename?: string | null
   avatarVisibility?: "public" | "hidden"
+  enableLinkPreviews: boolean
 }
 
 // Combined settings type
@@ -49,6 +50,7 @@ const DEFAULT_PRIVACY_SETTINGS: PrivacySettings = {
   enableMessageRequests: false,
   typingIndicatorScope: "everybody",
   sendReadReceiptsTo: "everybody",
+  enableLinkPreviews: true,
 }
 
 const DEFAULT_AVATAR_SETTINGS: AvatarSettings = {
@@ -140,6 +142,9 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
         }
         if (raw.avatarVisibility === "public" || raw.avatarVisibility === "hidden") {
           privacySettings.avatarVisibility = raw.avatarVisibility
+        }
+        if (typeof raw.enableLinkPreviews === "boolean") {
+          privacySettings.enableLinkPreviews = raw.enableLinkPreviews
         }
         setSettings((prev) => ({
           ...prev,
@@ -373,6 +378,9 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
       if ("sendReadReceiptsTo" in updates) {
         privacyUpdates.sendReadReceiptsTo = updates.sendReadReceiptsTo
       }
+      if ("enableLinkPreviews" in updates) {
+        privacyUpdates.enableLinkPreviews = updates.enableLinkPreviews
+      }
 
       // Optimistic update
       setSettings((prev) => ({ ...prev, ...updates }))
@@ -399,6 +407,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
             sendReadReceiptsTo: prev.sendReadReceiptsTo,
             avatarFilename: prev.avatarFilename ?? DEFAULT_AVATAR_SETTINGS.avatarFilename,
             avatarVisibility: prev.avatarVisibility ?? DEFAULT_AVATAR_SETTINGS.avatarVisibility,
+            enableLinkPreviews: prev.enableLinkPreviews,
             ...privacyUpdates,
           }
           void savePrivacySettings(newPrivacySettings)

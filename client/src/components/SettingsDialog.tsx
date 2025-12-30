@@ -823,6 +823,25 @@ export function SettingsDialog({
             </SelectContent>
           </Select>
         </div>
+
+        <Separator />
+
+        {/* Link Previews */}
+        <div className="flex items-center justify-between space-x-2">
+          <div className="space-y-1">
+            <Label htmlFor="link-previews" className="text-base">Link Previews</Label>
+            <p className="text-xs text-muted-foreground">
+              Fetch and display previews for links in messages. Previews are fetched through the server.
+            </p>
+          </div>
+          <Switch
+            id="link-previews"
+            checked={settings.enableLinkPreviews}
+            onCheckedChange={(checked) =>
+              updateSettings({ enableLinkPreviews: checked })
+            }
+          />
+        </div>
       </div>
     ),
     access: (
