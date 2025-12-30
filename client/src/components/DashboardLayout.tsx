@@ -2,7 +2,6 @@
 
 import * as React from "react"
 import { createPortal } from "react-dom"
-import EmojiPicker, { Theme } from "emoji-picker-react"
 import { Ban, Check, ShieldAlert, ShieldCheck, ShieldOff, Trash2, UserPlus } from "lucide-react"
 import { useTheme } from "next-themes"
 
@@ -56,6 +55,7 @@ import { MessageBubble, ComposeArea, ChatHeader } from "@/components/chat"
 import { CallNotice, type CallEventType } from "@/components/chat/CallNotice"
 import { resumeAudioContext } from "@/components/call"
 import { formatDuration } from "@/lib/webrtc"
+import { EmojiMartPicker } from "@/components/emoji/EmojiMartPicker"
 import type { Contact, StoredMessage, DirectoryEntry, Attachment } from "@/types/dashboard"
 import {
   decodeContactRecord,
@@ -212,7 +212,7 @@ export function DashboardLayout() {
     width: number
     height: number
   } | null>(null)
-  const emojiTheme = theme === "dark" ? Theme.DARK : theme === "system" ? Theme.AUTO : Theme.LIGHT
+  const emojiTheme = theme === "dark" ? "dark" : theme === "system" ? "auto" : "light"
   const lastCallStateRef = React.useRef<typeof callState | null>(null)
   const lastCallEventKeyRef = React.useRef<string | null>(null)
   const isSavedContact = React.useCallback(
@@ -2175,6 +2175,7 @@ export function DashboardLayout() {
         payload,
         activeContact.publicTransportKey
       )
+
       const localPayload = JSON.stringify({
         text: trimmed,
         attachments,
@@ -2603,6 +2604,7 @@ export function DashboardLayout() {
           payload,
           activeContact.publicTransportKey
         )
+
         const localPayload = JSON.stringify({
           type: "reaction",
           text: emoji,
@@ -2707,16 +2709,17 @@ export function DashboardLayout() {
               top: reactionPickerPosition.top,
               left: reactionPickerPosition.left,
               width: reactionPickerPosition.width,
+              height: reactionPickerPosition.height,
             }}
           >
-            <EmojiPicker
-              theme={emojiTheme}
-              onEmojiClick={(emojiData) => {
-                void handleSendReaction(reactionPickerMessage, emojiData.emoji)
-                setReactionPickerId(null)
-              }}
+            <EmojiMartPicker
               height={reactionPickerPosition.height}
               width={reactionPickerPosition.width}
+              theme={emojiTheme}
+              onEmojiSelect={(emoji) => {
+                void handleSendReaction(reactionPickerMessage, emoji)
+                setReactionPickerId(null)
+              }}
             />
           </div>,
           portalRoot

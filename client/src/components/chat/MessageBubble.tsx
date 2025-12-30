@@ -29,6 +29,7 @@ import { extractUrl, isEmbeddable } from "@/lib/urlUtils"
 import { useEmbedPreview } from "@/hooks/useEmbedPreview"
 import { useSettings } from "@/hooks/useSettings"
 import { LinkEmbed, LinkEmbedSkeleton } from "@/components/chat/LinkEmbed"
+import { EmojiMartEmoji } from "@/components/emoji/EmojiMartEmoji"
 import type { StoredMessage } from "@/types/dashboard"
 
 type MessageBubbleProps = {
@@ -297,10 +298,10 @@ export function MessageBubble({
           {message.reactions && message.reactions.length > 0 ? (
             <div
               className={cn(
-                "-mt-1 inline-flex flex-wrap items-center gap-1 rounded-full border px-2 py-1 text-[11px] shadow-sm",
+                "-mt-1 inline-flex min-h-8 flex-wrap items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[11px] shadow-sm backdrop-blur",
                 message.direction === "out"
-                  ? "self-end border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/40 dark:bg-emerald-900/30 dark:text-emerald-200"
-                  : "self-start border-border bg-card/90 text-muted-foreground"
+                  ? "self-end border-emerald-200/80 bg-gradient-to-b from-emerald-50/90 to-emerald-100/80 text-emerald-700 shadow-emerald-200/40 dark:border-emerald-900/50 dark:from-emerald-900/40 dark:to-emerald-900/20 dark:text-emerald-200"
+                  : "self-start border-border/70 bg-gradient-to-b from-card/95 to-card/70 text-muted-foreground shadow-black/5 dark:from-slate-900/70 dark:to-slate-900/40"
               )}
             >
               {message.reactions.map((reaction) => (
@@ -308,10 +309,10 @@ export function MessageBubble({
                   key={reaction.emoji}
                   type="button"
                   className={cn(
-                    "inline-flex items-center gap-1 rounded-full px-2 py-0.5 transition-colors",
+                    "inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 transition-colors",
                     reaction.reactedByMe
-                      ? "bg-emerald-200/70 text-emerald-900 dark:bg-emerald-800/60 dark:text-emerald-100"
-                      : "hover:bg-muted/80"
+                      ? "bg-emerald-200/80 text-emerald-900 shadow-inner dark:bg-emerald-800/70 dark:text-emerald-100"
+                      : "bg-background/60 text-muted-foreground hover:bg-background/80 dark:bg-background/20 dark:hover:bg-background/30"
                   )}
                   onClick={() =>
                     onReaction(
@@ -324,8 +325,8 @@ export function MessageBubble({
                   aria-pressed={reaction.reactedByMe}
                   aria-label={`React ${reaction.emoji}`}
                 >
-                  <span>{reaction.emoji}</span>
-                  <span className="text-[10px]">{reaction.count}</span>
+                  <EmojiMartEmoji emoji={reaction.emoji} size={16} className="leading-none" />
+                  <span className="text-[10px] leading-none">{reaction.count}</span>
                 </button>
               ))}
             </div>
