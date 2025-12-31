@@ -879,8 +879,7 @@ export function SettingsDialog({
                 "rounded-lg border p-4 space-y-2",
                 settings.customization?.chatBackground === "dots" && "chat-bg-dots",
                 settings.customization?.chatBackground === "grid" && "chat-bg-grid",
-                settings.customization?.chatBackground === "waves" && "chat-bg-waves",
-                settings.customization?.chatBackground === "hexagons" && "chat-bg-hexagons"
+                settings.customization?.chatBackground === "waves" && "chat-bg-waves"
               )}
             >
               <div className="flex justify-start">
@@ -938,8 +937,8 @@ export function SettingsDialog({
                 Pattern for the chat area.
               </p>
             </div>
-            <div className="grid grid-cols-5 gap-2">
-              {(["none", "dots", "grid", "waves", "hexagons"] as ChatBackground[]).map((bg) => (
+            <div className="grid grid-cols-4 gap-2">
+              {(["none", "dots", "grid", "waves"] as ChatBackground[]).map((bg) => (
                 <button
                   key={bg}
                   className={cn(
@@ -949,8 +948,7 @@ export function SettingsDialog({
                       : "border-muted hover:border-muted-foreground/50",
                     bg === "dots" && "chat-bg-dots",
                     bg === "grid" && "chat-bg-grid",
-                    bg === "waves" && "chat-bg-waves",
-                    bg === "hexagons" && "chat-bg-hexagons"
+                    bg === "waves" && "chat-bg-waves"
                   )}
                   onClick={() => {
                     const newCustomization = {

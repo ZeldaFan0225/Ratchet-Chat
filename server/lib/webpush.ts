@@ -59,8 +59,9 @@ async function sendPushNotification(
     const webPushError = error as { statusCode?: number; message?: string }
 
     // 410 Gone means subscription expired
-    if (webPushError.statusCode === 410) {
-      serverLogger.info("Push subscription expired (410 Gone)", {
+    // 403 Forbidden also implies invalid/expired subscription (common on iOS)
+    if (webPushError.statusCode === 410 || webPushError.statusCode === 403) {
+      serverLogger.info(`Push subscription expired (${webPushError.statusCode})`, {
         endpoint: subscription.endpoint.slice(0, 50) + "...",
       })
       return { success: false, expired: true }

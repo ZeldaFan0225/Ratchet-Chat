@@ -3040,8 +3040,7 @@ export function DashboardLayout() {
             "pointer-events-none absolute inset-0 z-0 opacity-40",
                 customization.chatBackground === "dots" && "chat-bg-dots",
                 customization.chatBackground === "grid" && "chat-bg-grid",
-                customization.chatBackground === "waves" && "chat-bg-waves",
-                customization.chatBackground === "hexagons" && "chat-bg-hexagons"
+                customization.chatBackground === "waves" && "chat-bg-waves"
               )}
             />
           {isDragOver ? (

@@ -65,6 +65,8 @@ export function useThemeCustomization(): ResolvedTheme {
     const rgb = hexToRgb(accent)
 
     root.style.setProperty("--theme-accent", accent)
+    root.style.setProperty("--theme-accent-light", lightenColor(accent, 0.85))
+    root.style.setProperty("--theme-accent-dark", darkenColor(accent, 0.6))
     root.style.setProperty("--bubble-outgoing", colors.outgoingBubble)
     root.style.setProperty("--bubble-outgoing-text", colors.outgoingText)
     root.style.setProperty("--bubble-incoming", colors.incomingBubble)
@@ -74,14 +76,14 @@ export function useThemeCustomization(): ResolvedTheme {
     if (isDark) {
       root.style.setProperty("--chat-glow", darkenColor(accent, 0.6))
       root.style.setProperty("--chat-grid", rgb ? `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.08)` : accent)
-      
+
       // Active state colors (Sidebar)
       root.style.setProperty("--theme-accent-active-bg", darkenColor(accent, 0.6)) // Same as glow for dark
       root.style.setProperty("--theme-accent-active-text", lightenColor(accent, 0.8))
     } else {
       root.style.setProperty("--chat-glow", lightenColor(accent, 0.85))
       root.style.setProperty("--chat-grid", rgb ? `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.15)` : accent)
-      
+
       // Active state colors (Sidebar)
       root.style.setProperty("--theme-accent-active-bg", lightenColor(accent, 0.9))
       root.style.setProperty("--theme-accent-active-text", darkenColor(accent, 0.6))
@@ -96,6 +98,8 @@ export function useThemeCustomization(): ResolvedTheme {
 
     return () => {
       root.style.removeProperty("--theme-accent")
+      root.style.removeProperty("--theme-accent-light")
+      root.style.removeProperty("--theme-accent-dark")
       root.style.removeProperty("--bubble-outgoing")
       root.style.removeProperty("--bubble-outgoing-text")
       root.style.removeProperty("--bubble-incoming")

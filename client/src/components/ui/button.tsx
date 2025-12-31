@@ -18,7 +18,7 @@ const buttonVariants = cva(
           "hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50",
         link: "text-primary underline-offset-4 hover:underline",
         accept:
-          "bg-emerald-600 text-white hover:bg-emerald-700 focus-visible:ring-emerald-500/20",
+          "bg-[var(--theme-accent)] text-white hover:opacity-90 focus-visible:ring-[var(--theme-accent)]/20",
         destructive:
           "border border-destructive text-primary bg-background hover:bg-destructive/10 focus-visible:ring-destructive/20",
         nuclear:
