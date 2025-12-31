@@ -95,7 +95,7 @@ export function AppSidebar({
               className="flex items-center gap-3 rounded-md px-1 py-1 text-left transition hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
               aria-label="Open app info"
             >
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-600 text-white shadow-sm">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--theme-accent)] text-white shadow-sm">
                 <ShieldCheck className="h-5 w-5" />
               </div>
               <div className="leading-tight group-data-[collapsible=icon]:hidden">
@@ -125,7 +125,7 @@ export function AppSidebar({
             setNewChat("")
           }}
         >
-          <UserPlus className="h-4 w-4 text-emerald-600" />
+          <UserPlus className="h-4 w-4 text-[var(--theme-accent)]" />
           <SidebarInput
             placeholder="Recipient ID (user@host)"
             className="h-7 border-none bg-transparent p-0 text-xs shadow-none focus-visible:ring-0"
@@ -242,7 +242,7 @@ export function AppSidebar({
                   conversations.map((conversation) => (
                     <SidebarMenuItem key={conversation.uid}>
                       <SidebarMenuButton
-                        className="h-auto w-full overflow-hidden items-start gap-3 rounded-xl px-3 py-3 data-[active=true]:bg-emerald-100 dark:data-[active=true]:bg-emerald-900/20 data-[active=true]:text-emerald-900 dark:data-[active=true]:text-emerald-100"
+                        className="h-auto w-full overflow-hidden items-start gap-3 rounded-xl px-3 py-3 data-[active=true]:bg-[var(--theme-accent-active-bg)] data-[active=true]:text-[var(--theme-accent-active-text)]"
                         isActive={activeId === conversation.id && !conversation.foundMessageId}
                         onClick={() => {
                           onSelectConversation(conversation.id, conversation.foundMessageId)
@@ -278,11 +278,11 @@ export function AppSidebar({
                               className="truncate text-xs text-muted-foreground flex-1"
                               title={conversation.lastMessage}
                             >
-                              {conversation.foundMessageId && <span className="font-semibold text-emerald-600 dark:text-emerald-400 mr-1">Found:</span>}
+                              {conversation.foundMessageId && <span className="font-semibold text-[var(--theme-accent)] mr-1">Found:</span>}
                               {conversation.lastMessage}
                             </p>
                             {conversation.unread > 0 && !conversation.foundMessageId ? (
-                              <span className="shrink-0 min-w-[20px] rounded-full bg-emerald-500 px-1.5 py-0.5 text-center text-[10px] font-semibold text-white">
+                              <span className="shrink-0 min-w-[20px] rounded-full bg-[var(--theme-accent)] px-1.5 py-0.5 text-center text-[10px] font-semibold text-white">
                                 {conversation.unread}
                               </span>
                             ) : null}

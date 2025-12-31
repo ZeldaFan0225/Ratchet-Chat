@@ -3061,7 +3061,7 @@ export function DashboardLayout() {
               {!activeContact ? (
                 <div className="flex min-h-[60vh] items-center justify-center px-4 py-8">
                   <div className="w-full max-w-md rounded-2xl border bg-card/80 p-6 text-center shadow-sm">
-                    <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-emerald-600 text-white shadow-sm">
+                    <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--theme-accent)] text-white shadow-sm">
                       <ShieldCheck className="h-6 w-6" />
                     </div>
                     <h2 className="text-lg font-semibold">Ratchet Chat</h2>
@@ -3070,15 +3070,15 @@ export function DashboardLayout() {
                     </p>
                     <div className="mt-4 space-y-2 text-left text-xs text-muted-foreground">
                       <div className="flex items-start gap-2">
-                        <span className="mt-1 h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                        <span className="mt-1 h-1.5 w-1.5 rounded-full bg-[var(--theme-accent)]" />
                         <span>Keys stay on your devices, never the server.</span>
                       </div>
                       <div className="flex items-start gap-2">
-                        <span className="mt-1 h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                        <span className="mt-1 h-1.5 w-1.5 rounded-full bg-[var(--theme-accent)]" />
                         <span>Server stores ciphertext only, not readable content.</span>
                       </div>
                       <div className="flex items-start gap-2">
-                        <span className="mt-1 h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                        <span className="mt-1 h-1.5 w-1.5 rounded-full bg-[var(--theme-accent)]" />
                         <span>Select a chat on the left to begin.</span>
                       </div>
                     </div>
@@ -3136,7 +3136,7 @@ export function DashboardLayout() {
                               type="checkbox"
                               checked={addToContactsOnAccept}
                               onChange={(e) => setAddToContactsOnAccept(e.target.checked)}
-                              className="h-4 w-4 rounded border-amber-400 text-emerald-600 focus:ring-emerald-500 dark:border-amber-600"
+                              className="h-4 w-4 rounded border-amber-400 text-[var(--theme-accent)] focus:ring-[var(--theme-accent)] dark:border-amber-600"
                             />
                             <span className="text-xs text-amber-700 dark:text-amber-300">
                               Add to contacts when accepting

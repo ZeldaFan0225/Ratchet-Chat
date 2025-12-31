@@ -74,9 +74,17 @@ export function useThemeCustomization(): ResolvedTheme {
     if (isDark) {
       root.style.setProperty("--chat-glow", darkenColor(accent, 0.6))
       root.style.setProperty("--chat-grid", rgb ? `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.08)` : accent)
+      
+      // Active state colors (Sidebar)
+      root.style.setProperty("--theme-accent-active-bg", darkenColor(accent, 0.6)) // Same as glow for dark
+      root.style.setProperty("--theme-accent-active-text", lightenColor(accent, 0.8))
     } else {
       root.style.setProperty("--chat-glow", lightenColor(accent, 0.85))
       root.style.setProperty("--chat-grid", rgb ? `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.15)` : accent)
+      
+      // Active state colors (Sidebar)
+      root.style.setProperty("--theme-accent-active-bg", lightenColor(accent, 0.9))
+      root.style.setProperty("--theme-accent-active-text", darkenColor(accent, 0.6))
     }
 
     // OLED mode - add class to enable pitch black backgrounds
@@ -94,6 +102,8 @@ export function useThemeCustomization(): ResolvedTheme {
       root.style.removeProperty("--bubble-incoming-text")
       root.style.removeProperty("--chat-glow")
       root.style.removeProperty("--chat-grid")
+      root.style.removeProperty("--theme-accent-active-bg")
+      root.style.removeProperty("--theme-accent-active-text")
       root.classList.remove("oled")
     }
   }, [preset, isDark, oledMode])
