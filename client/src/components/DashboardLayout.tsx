@@ -191,6 +191,7 @@ export function DashboardLayout() {
   const [sidebarSearchQuery, setSidebarSearchQuery] = React.useState("")
   const [chatSearchQuery, setChatSearchQuery] = React.useState("")
   const [isChatSearchOpen, setIsChatSearchOpen] = React.useState(false)
+  const [currentSearchIndex, setCurrentSearchIndex] = React.useState(0)
   const [scrollToMessageId, setScrollToMessageId] = React.useState<string | null>(null)
   const [highlightedMessageId, setHighlightedMessageId] = React.useState<string | null>(null)
   const [typingStatus, setTypingStatus] = React.useState<Record<string, boolean>>({})
@@ -643,12 +644,17 @@ export function DashboardLayout() {
     ? messagesByPeer.get(activeContact.handle) ?? []
     : []
 
-  const activeMessages = React.useMemo(() => {
-    if (!chatSearchQuery.trim()) {
-      return activeMessagesRaw
-    }
+  // Show all messages during search (don't filter, just highlight matches)
+  const activeMessages = activeMessagesRaw
+
+  // Track which messages match the search query (newest first for "1/N" to mean most recent)
+  const searchMatchIds = React.useMemo(() => {
+    if (!chatSearchQuery.trim()) return []
     const lower = chatSearchQuery.toLowerCase()
-    return activeMessagesRaw.filter((msg) => msg.text.toLowerCase().includes(lower))
+    return activeMessagesRaw
+      .filter((msg) => msg.text?.toLowerCase().includes(lower))
+      .map((msg) => msg.id)
+      .reverse()
   }, [activeMessagesRaw, chatSearchQuery])
 
   const activeMessageItems = React.useMemo(() => {
@@ -959,6 +965,36 @@ export function DashboardLayout() {
       scrollRef.current.scrollIntoView({ behavior: "smooth" })
     }
   }, [visibleMessages, activeId, chatSearchQuery]) // Removed scrollToMessageId from dependencies to avoid re-triggering on clear
+
+  // Effect 3: Reset search index and scroll to first match when query changes
+  const prevQueryRef = React.useRef("")
+  React.useEffect(() => {
+    // Only reset and scroll when the query actually changes
+    if (chatSearchQuery !== prevQueryRef.current) {
+      prevQueryRef.current = chatSearchQuery
+      setCurrentSearchIndex(0)
+      if (chatSearchQuery.trim() && searchMatchIds.length > 0) {
+        setScrollToMessageId(searchMatchIds[0])
+      }
+    }
+  }, [chatSearchQuery, searchMatchIds])
+
+  // Search navigation handlers
+  const handleSearchNext = React.useCallback(() => {
+    if (searchMatchIds.length === 0) return
+    const nextIndex = (currentSearchIndex + 1) % searchMatchIds.length
+    setCurrentSearchIndex(nextIndex)
+    setScrollToMessageId(searchMatchIds[nextIndex])
+  }, [searchMatchIds, currentSearchIndex])
+
+  const handleSearchPrev = React.useCallback(() => {
+    if (searchMatchIds.length === 0) return
+    const prevIndex = currentSearchIndex === 0
+      ? searchMatchIds.length - 1
+      : currentSearchIndex - 1
+    setCurrentSearchIndex(prevIndex)
+    setScrollToMessageId(searchMatchIds[prevIndex])
+  }, [searchMatchIds, currentSearchIndex])
 
   React.useEffect(() => {
     if (!user?.handle) {
@@ -2908,7 +2944,12 @@ export function DashboardLayout() {
           onChatSearchClose={() => {
             setChatSearchQuery("")
             setIsChatSearchOpen(false)
+            setCurrentSearchIndex(0)
           }}
+          searchMatchCount={searchMatchIds.length}
+          currentSearchIndex={currentSearchIndex}
+          onSearchNext={handleSearchNext}
+          onSearchPrev={handleSearchPrev}
           onShowRecipientInfo={() => setShowRecipientInfo(true)}
           onExportChat={handleExportChat}
           onDeleteChat={handleDeleteChat}
@@ -3101,6 +3142,7 @@ export function DashboardLayout() {
                         onReply={beginReply}
                         onEdit={beginEdit}
                         onDelete={(msg) => void handleDeleteMessage(msg)}
+                        searchQuery={chatSearchQuery}
                       />
                     )
                   })}

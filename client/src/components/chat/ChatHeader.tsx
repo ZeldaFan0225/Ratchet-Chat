@@ -5,6 +5,8 @@ import {
   Ban,
   BellOff,
   BellRing,
+  ChevronDown,
+  ChevronUp,
   Download,
   MoreVertical,
   Phone,
@@ -41,6 +43,10 @@ type ChatHeaderProps = {
   onChatSearchQueryChange: (query: string) => void
   onChatSearchOpen: () => void
   onChatSearchClose: () => void
+  searchMatchCount?: number
+  currentSearchIndex?: number
+  onSearchNext?: () => void
+  onSearchPrev?: () => void
   onShowRecipientInfo: () => void
   onExportChat: () => void
   onDeleteChat: () => void
@@ -62,6 +68,10 @@ export function ChatHeader({
   onChatSearchQueryChange,
   onChatSearchOpen,
   onChatSearchClose,
+  searchMatchCount = 0,
+  currentSearchIndex = 0,
+  onSearchNext,
+  onSearchPrev,
   onShowRecipientInfo,
   onExportChat,
   onDeleteChat,
@@ -266,19 +276,58 @@ export function ChatHeader({
 
       <div className="ml-auto hidden items-center gap-2 sm:flex">
         {isChatSearchOpen ? (
-          <div className="relative w-64 lg:w-80">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              placeholder="Search in chat..."
-              className="h-9 pl-9 pr-10"
-              value={chatSearchQuery}
-              onChange={(e) => onChatSearchQueryChange(e.target.value)}
-              autoFocus
-            />
+          <div className="flex items-center gap-1">
+            <div className="relative w-48 lg:w-64">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Search in chat..."
+                className="h-9 pl-9 pr-3"
+                value={chatSearchQuery}
+                onChange={(e) => onChatSearchQueryChange(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault()
+                    if (e.shiftKey) {
+                      onSearchPrev?.()
+                    } else {
+                      onSearchNext?.()
+                    }
+                  }
+                }}
+                autoFocus
+              />
+            </div>
+            <span className="min-w-[3.5rem] text-center text-sm text-muted-foreground">
+              {searchMatchCount > 0
+                ? `${currentSearchIndex + 1} / ${searchMatchCount}`
+                : chatSearchQuery.trim()
+                ? "0 results"
+                : ""}
+            </span>
             <Button
               variant="ghost"
               size="icon-sm"
-              className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground"
+              className="text-muted-foreground"
+              onClick={onSearchNext}
+              disabled={searchMatchCount === 0}
+              title="Older match"
+            >
+              <ChevronUp className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground"
+              onClick={onSearchPrev}
+              disabled={searchMatchCount === 0}
+              title="Newer match"
+            >
+              <ChevronDown className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground"
               onClick={onChatSearchClose}
             >
               <X className="h-4 w-4" />
@@ -372,19 +421,58 @@ export function ChatHeader({
 
       {isChatSearchOpen ? (
         <div className="w-full sm:hidden">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              placeholder="Search in chat..."
-              className="h-9 pl-9 pr-10"
-              value={chatSearchQuery}
-              onChange={(e) => onChatSearchQueryChange(e.target.value)}
-              autoFocus
-            />
+          <div className="flex items-center gap-1">
+            <div className="relative flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Search..."
+                className="h-9 pl-9 pr-3"
+                value={chatSearchQuery}
+                onChange={(e) => onChatSearchQueryChange(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault()
+                    if (e.shiftKey) {
+                      onSearchPrev?.()
+                    } else {
+                      onSearchNext?.()
+                    }
+                  }
+                }}
+                autoFocus
+              />
+            </div>
+            <span className="min-w-[3rem] text-center text-xs text-muted-foreground">
+              {searchMatchCount > 0
+                ? `${currentSearchIndex + 1}/${searchMatchCount}`
+                : chatSearchQuery.trim()
+                ? "0"
+                : ""}
+            </span>
             <Button
               variant="ghost"
               size="icon-sm"
-              className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground"
+              className="text-muted-foreground"
+              onClick={onSearchNext}
+              disabled={searchMatchCount === 0}
+              title="Older match"
+            >
+              <ChevronUp className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground"
+              onClick={onSearchPrev}
+              disabled={searchMatchCount === 0}
+              title="Newer match"
+            >
+              <ChevronDown className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground"
               onClick={onChatSearchClose}
             >
               <X className="h-4 w-4" />

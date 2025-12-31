@@ -58,6 +58,7 @@ type MessageBubbleProps = {
   onReply: (message: StoredMessage) => void
   onEdit: (message: StoredMessage) => void
   onDelete: (message: StoredMessage) => void
+  searchQuery?: string
 }
 
 export function MessageBubble({
@@ -78,6 +79,7 @@ export function MessageBubble({
   onReply,
   onEdit,
   onDelete,
+  searchQuery,
 }: MessageBubbleProps) {
   const meta = formatMessageTime(message.timestamp)
   const deliveredAt = message.direction === "out" ? message.deliveredAt : null
@@ -117,6 +119,79 @@ export function MessageBubble({
 
   // Link embed preview
   const { settings } = useSettings()
+
+  // Search text highlighting
+  const highlightText = React.useCallback(
+    (text: string): React.ReactNode => {
+      if (!searchQuery?.trim() || !text) return text
+
+      const escaped = searchQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      const regex = new RegExp(`(${escaped})`, "gi")
+      const parts = text.split(regex)
+
+      return parts.map((part, i) =>
+        part.toLowerCase() === searchQuery.toLowerCase() ? (
+          <mark
+            key={i}
+            className="bg-yellow-300 dark:bg-yellow-500/50 rounded px-0.5"
+          >
+            {part}
+          </mark>
+        ) : (
+          part
+        )
+      )
+    },
+    [searchQuery]
+  )
+
+  // Memoize ReactMarkdown components to avoid re-renders
+  const markdownComponents = React.useMemo(
+    () => ({
+      a: ({ href, children, ...props }: React.ComponentProps<"a">) => (
+        <a
+          href={href}
+          onClick={(e) => {
+            e.preventDefault()
+            if (href) onPendingLink(href)
+          }}
+          {...props}
+        >
+          {children}
+        </a>
+      ),
+      p: ({ children }: { children?: React.ReactNode }) => (
+        <p>
+          {React.Children.map(children, (child) =>
+            typeof child === "string" ? highlightText(child) : child
+          )}
+        </p>
+      ),
+      li: ({ children, ...props }: React.ComponentProps<"li">) => (
+        <li {...props}>
+          {React.Children.map(children, (child) =>
+            typeof child === "string" ? highlightText(child) : child
+          )}
+        </li>
+      ),
+      strong: ({ children, ...props }: React.ComponentProps<"strong">) => (
+        <strong {...props}>
+          {React.Children.map(children, (child) =>
+            typeof child === "string" ? highlightText(child) : child
+          )}
+        </strong>
+      ),
+      em: ({ children, ...props }: React.ComponentProps<"em">) => (
+        <em {...props}>
+          {React.Children.map(children, (child) =>
+            typeof child === "string" ? highlightText(child) : child
+          )}
+        </em>
+      ),
+    }),
+    [highlightText, onPendingLink]
+  )
+
   const embeddableUrl = React.useMemo(() => {
     if (!message.text) return null
     const url = extractUrl(message.text)
@@ -411,22 +486,7 @@ export function MessageBubble({
               <div className="whitespace-pre-wrap prose prose-sm dark:prose-invert prose-emerald max-w-none prose-p:leading-relaxed prose-pre:bg-muted prose-pre:p-2 prose-pre:rounded-md prose-code:text-emerald-600 dark:prose-code:text-emerald-400 break-words [word-break:break-word]">
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
-                  components={{
-                    a: ({ href, children, ...props }) => {
-                      return (
-                        <a
-                          href={href}
-                          onClick={(e) => {
-                            e.preventDefault()
-                            if (href) onPendingLink(href)
-                          }}
-                          {...props}
-                        >
-                          {children}
-                        </a>
-                      )
-                    },
-                  }}
+                  components={markdownComponents}
                 >
                   {message.text}
                 </ReactMarkdown>

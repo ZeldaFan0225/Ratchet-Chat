@@ -26,6 +26,9 @@ services:
       LOG_DIR: /data/logs
       SERVER_CERT_PATH: /data/.cert
       OPAQUE_FILE_PATH: /data/.opaque
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@example.com}
     volumes:
       - server-data:/data
     depends_on:
