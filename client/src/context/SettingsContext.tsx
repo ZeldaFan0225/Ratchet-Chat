@@ -13,7 +13,7 @@ export type MessageAcceptance = "everybody" | "same_server" | "contacts" | "nobo
 export type VisibilityScope = "everybody" | "contacts" | "nobody" // Legacy, kept for backwards compat
 
 // Customization types
-export type ChatBackground = "none" | "dots" | "grid" | "waves"
+export type ChatBackground = "none" | "dots" | "grid" | "waves" | "hexagons"
 
 export type ThemePreset = {
   id: string
@@ -335,7 +335,8 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
             customRaw.chatBackground === "none" ||
             customRaw.chatBackground === "dots" ||
             customRaw.chatBackground === "grid" ||
-            customRaw.chatBackground === "waves"
+            customRaw.chatBackground === "waves" ||
+            customRaw.chatBackground === "hexagons"
           ) {
             customization.chatBackground = customRaw.chatBackground
           }

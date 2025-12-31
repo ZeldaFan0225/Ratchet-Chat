@@ -3038,10 +3038,12 @@ export function DashboardLayout() {
           <div className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(circle_at_top,_var(--chat-glow),_transparent_55%)]" />
           <div className={cn(
             "pointer-events-none absolute inset-0 z-0 opacity-40",
-            customization.chatBackground === "dots" && "chat-bg-dots",
-            customization.chatBackground === "grid" && "chat-bg-grid",
-            customization.chatBackground === "waves" && "chat-bg-waves"
-          )} />
+                customization.chatBackground === "dots" && "chat-bg-dots",
+                customization.chatBackground === "grid" && "chat-bg-grid",
+                customization.chatBackground === "waves" && "chat-bg-waves",
+                customization.chatBackground === "hexagons" && "chat-bg-hexagons"
+              )}
+            />
           {isDragOver ? (
             <div
               className="pointer-events-none absolute inset-4 z-20 flex items-center justify-center rounded-2xl border-2 border-dashed text-sm font-medium shadow-lg"
