@@ -35,11 +35,18 @@ model User {
   // Muted conversations (encrypted client-side)
   encrypted_muted_conversations    String?       @db.Text
   encrypted_muted_conversations_iv String?
+  // TOTP 2FA fields
+  totp_enabled                  Boolean   @default(false)
+  totp_secret                   String?   // Plaintext secret for server verification
+  encrypted_totp_secret         String?   @db.Text  // Encrypted with master key (for client backup)
+  encrypted_totp_secret_iv      String?
+  totp_verified_at              DateTime?
   created_at                 DateTime            @default(now())
   incoming_queue             IncomingQueue[]     @relation("IncomingRecipient")
   vault_messages             MessageVault[]      @relation("VaultOwner")
   sessions                   Session[]           @relation("UserSessions")
   passkeys                   PasskeyCredential[] @relation("UserPasskeys")
+  totp_recovery_codes        TotpRecoveryCode[]  @relation("UserTotpRecoveryCodes")
 }
 
 model PasskeyCredential {
@@ -56,6 +63,19 @@ model PasskeyCredential {
   user          User     @relation("UserPasskeys", fields: [user_id], references: [id], onDelete: Cascade)
 
   @@index([user_id])
+}
+
+model TotpRecoveryCode {
+  id         String    @id @default(uuid()) @db.Uuid
+  user_id    String    @db.Uuid
+  code_hash  String    // SHA-256 hash of the recovery code
+  used_at    DateTime?
+  created_at DateTime  @default(now())
+
+  user       User      @relation("UserTotpRecoveryCodes", fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@index([code_hash])
 }
 
 model Session {

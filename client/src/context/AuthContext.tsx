@@ -42,6 +42,12 @@ import {
   registerStart,
 } from "@/lib/opaque"
 import {
+  generateTotpSecret,
+  getTotpUri,
+  encryptTotpSecret,
+  normalizeRecoveryCode,
+} from "@/lib/totp"
+import {
   startAuthentication,
   startRegistration,
 } from "@simplewebauthn/browser"
@@ -91,8 +97,30 @@ export type SessionInfo = {
   isCurrent: boolean
 }
 
+// Server capabilities for password+2FA
+export type AuthCapabilities = {
+  passkey: boolean
+  password_2fa: boolean
+}
+
+// Auth methods enabled for current user
+export type AuthMethods = {
+  has_passkey: boolean
+  has_password_2fa: boolean
+  passkey_count: number
+}
+
+// Pending password login state (after password verified, before TOTP)
+type PendingPasswordLogin = {
+  username: string
+  handle: string
+  sessionTicket: string
+  kdfSalt: string
+  kdfIterations: number
+}
+
 type AuthContextValue = {
-  status: "loading" | "guest" | "locked" | "authenticated"
+  status: "loading" | "guest" | "locked" | "authenticated" | "awaiting_2fa" | "awaiting_master_password"
   user: { id: string | null; username: string; handle: string } | null
   token: string | null
   masterKey: CryptoKey | null
@@ -100,6 +128,8 @@ type AuthContextValue = {
   publicIdentityKey: string | null
   transportPrivateKey: Uint8Array | null
   publicTransportKey: string | null
+  // Server capabilities
+  capabilities: AuthCapabilities | null
   // Passkey-based registration (requires passkey + password)
   register: (username: string, password: string, savePassword?: boolean) => Promise<void>
   // Passkey-based login (no password required, optional username hint)
@@ -118,6 +148,28 @@ type AuthContextValue = {
   fetchPasskeys: () => Promise<PasskeyInfo[]>
   addPasskey: (name?: string) => Promise<PasskeyInfo>
   removePasskey: (credentialId: string) => Promise<void>
+  // Password + 2FA authentication
+  registerWithPassword: (
+    username: string,
+    accountPassword: string,
+    masterPassword: string,
+    savePassword?: boolean
+  ) => Promise<{ totpSecret: string; totpUri: string; onVerify: (totpCode: string) => Promise<string[]> }>
+  loginWithPassword: (username: string, accountPassword: string) => Promise<void>
+  verifyTotp: (code: string) => Promise<void>
+  verifyRecoveryCode: (code: string) => Promise<{ remainingCodes: number }>
+  unlockAfter2FA: (masterPassword: string, savePassword?: boolean) => Promise<void>
+  cancelPasswordLogin: () => void
+  // Auth method management
+  fetchAuthMethods: () => Promise<AuthMethods>
+  addPasswordAuth: (
+    accountPassword: string,
+    masterPassword: string
+  ) => Promise<{ totpSecret: string; totpUri: string; onVerify: (totpCode: string) => Promise<string[]> }>
+  removePasswordAuth: () => Promise<void>
+  regenerateTotp: () => Promise<{ totpSecret: string; totpUri: string; onVerify: (totpCode: string) => Promise<string[]> }>
+  regenerateRecoveryCodes: () => Promise<string[]>
+  changeAccountPassword: (currentPassword: string, newPassword: string) => Promise<void>
 }
 
 const ACTIVE_SESSION_KEY = "active_session"
@@ -239,7 +291,7 @@ async function clearStaleData() {
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [status, setStatus] = React.useState<"loading" | "guest" | "locked" | "authenticated">("loading")
+  const [status, setStatus] = React.useState<"loading" | "guest" | "locked" | "authenticated" | "awaiting_2fa" | "awaiting_master_password">("loading")
   const [token, setToken] = React.useState<string | null>(null)
   const [user, setUser] = React.useState<{
     id: string | null
@@ -255,6 +307,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     React.useState<Uint8Array | null>(null)
   const [publicTransportKey, setPublicTransportKey] =
     React.useState<string | null>(null)
+  const [capabilities, setCapabilities] = React.useState<AuthCapabilities | null>(null)
+  const [pendingPasswordLogin, setPendingPasswordLogin] = React.useState<PendingPasswordLogin | null>(null)
+  // Store encrypted keys temporarily during 2FA flow
+  const [pendingKeys, setPendingKeys] = React.useState<{
+    encrypted_identity_key: string
+    encrypted_identity_iv: string
+    encrypted_transport_key: string
+    encrypted_transport_iv: string
+    public_identity_key: string
+    public_transport_key: string
+  } | null>(null)
 
   const clearSession = React.useCallback(async (callLogoutApi = true) => {
     // Clear state FIRST so UI updates immediately
@@ -265,6 +328,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setPublicIdentityKey(null)
     setTransportPrivateKey(null)
     setPublicTransportKey(null)
+    setPendingPasswordLogin(null)
+    setPendingKeys(null)
 
     const currentToken = token
     setToken(null)
@@ -400,6 +465,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     }
     void restore()
+  }, [])
+
+  React.useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const data = await apiFetch<AuthCapabilities>("/auth/capabilities")
+        if (!cancelled) {
+          setCapabilities(data)
+        }
+      } catch {
+        if (!cancelled) {
+          setCapabilities(null)
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const performOpaqueLogin = React.useCallback(
@@ -1025,6 +1109,531 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     })
   }, [])
 
+  const registerWithPassword = React.useCallback(
+    async (
+      usernameInput: string,
+      accountPassword: string,
+      masterPassword: string,
+      _savePassword = false
+    ) => {
+      console.log("[Auth] registerWithPassword starting for:", usernameInput)
+      const { username, handle } = resolveLocalUser(usernameInput)
+      console.log("[Auth] Resolved username:", username, "handle:", handle)
+
+      const opaqueStart = await registerStart(accountPassword)
+      console.log("[Auth] OPAQUE registerStart completed, request length:", opaqueStart.request.length)
+
+      const startResponse = await apiFetch<{ opaque_response: string }>(
+        "/auth/password/register/start",
+        {
+          method: "POST",
+          body: {
+            username,
+            opaque_request: bytesToBase64(opaqueStart.request),
+          },
+        }
+      )
+      console.log("[Auth] Server register/start succeeded, response length:", startResponse.opaque_response.length)
+
+      const totpSecret = generateTotpSecret()
+      const totpUri = getTotpUri(totpSecret, handle)
+
+      const onVerify = async (totpCode: string) => {
+        console.log("[Auth] onVerify starting, completing registration")
+        const opaqueFinish = await registerFinish(
+          opaqueStart.state,
+          base64ToBytes(startResponse.opaque_response)
+        )
+        console.log("[Auth] OPAQUE registerFinish completed, finish length:", opaqueFinish.length)
+
+        const kdfSalt = generateSalt()
+        const kdfIterations = 310_000
+        const masterKey = await deriveMasterKey(
+          masterPassword,
+          kdfSalt,
+          kdfIterations
+        )
+        const identityPair = await generateIdentityKeyPair()
+        const transportPair = await generateTransportKeyPair()
+        const encryptedIdentity = await encryptPrivateKey(
+          masterKey,
+          identityPair.privateKey
+        )
+        const encryptedTransport = await encryptPrivateKey(
+          masterKey,
+          transportPair.privateKey
+        )
+        const encryptedTotp = await encryptTotpSecret(masterKey, totpSecret)
+
+        console.log("[Auth] Keys generated, calling server register/finish")
+        const response = await apiFetch<{ recovery_codes: string[] }>(
+          "/auth/password/register/finish",
+          {
+            method: "POST",
+            body: {
+              username,
+              opaque_finish: bytesToBase64(opaqueFinish),
+              kdf_salt: bytesToBase64(kdfSalt),
+              kdf_iterations: kdfIterations,
+              public_identity_key: identityPair.publicKey,
+              public_transport_key: transportPair.publicKey,
+              encrypted_identity_key: encryptedIdentity.ciphertext,
+              encrypted_identity_iv: encryptedIdentity.iv,
+              encrypted_transport_key: encryptedTransport.ciphertext,
+              encrypted_transport_iv: encryptedTransport.iv,
+              totp_secret: totpSecret,
+              encrypted_totp_secret: encryptedTotp.ciphertext,
+              encrypted_totp_secret_iv: encryptedTotp.iv,
+              totp_code: totpCode.trim(),
+            },
+          }
+        )
+        console.log("[Auth] Server register/finish succeeded, got", response.recovery_codes.length, "recovery codes")
+
+        return response.recovery_codes
+      }
+
+      return { totpSecret, totpUri, onVerify }
+    },
+    []
+  )
+
+  const loginWithPassword = React.useCallback(
+    async (usernameInput: string, accountPassword: string) => {
+      console.log("[Auth] loginWithPassword starting for:", usernameInput)
+      const { username, handle } = resolveLocalUser(usernameInput)
+      console.log("[Auth] Resolved username:", username, "handle:", handle)
+
+      const params = await apiFetch<{
+        kdf_salt: string
+        kdf_iterations: number
+      }>(`/auth/params/${encodeURIComponent(username)}`)
+      console.log("[Auth] Got params, starting OPAQUE login")
+
+      const loginStartState = await loginStart(accountPassword)
+      console.log("[Auth] OPAQUE loginStart completed, request length:", loginStartState.request.length)
+
+      const startResponse = await apiFetch<{ opaque_response: string }>(
+        "/auth/password/login/start",
+        {
+          method: "POST",
+          body: {
+            username,
+            opaque_request: bytesToBase64(loginStartState.request),
+          },
+        }
+      )
+      console.log("[Auth] Server login/start succeeded, response length:", startResponse.opaque_response.length)
+
+      const loginFinishState = await loginFinish(
+        loginStartState.state,
+        base64ToBytes(startResponse.opaque_response)
+      )
+      console.log("[Auth] OPAQUE loginFinish completed")
+
+      const finishResponse = await apiFetch<{
+        requires_2fa: boolean
+        session_ticket: string
+      }>("/auth/password/login/finish", {
+        method: "POST",
+        body: {
+          username,
+          opaque_finish: bytesToBase64(loginFinishState.finishMessage),
+        },
+      })
+      console.log("[Auth] Server login/finish succeeded, requires_2fa:", finishResponse.requires_2fa)
+
+      setPendingPasswordLogin({
+        username,
+        handle,
+        sessionTicket: finishResponse.session_ticket,
+        kdfSalt: params.kdf_salt,
+        kdfIterations: params.kdf_iterations,
+      })
+      setPendingKeys(null)
+      setStatus("awaiting_2fa")
+    },
+    []
+  )
+
+  const verifyTotp = React.useCallback(
+    async (code: string) => {
+      if (!pendingPasswordLogin) {
+        throw new Error("No pending login session")
+      }
+      const response = await apiFetch<{
+        token: string
+        keys: {
+          encrypted_identity_key: string
+          encrypted_identity_iv: string
+          encrypted_transport_key: string
+          encrypted_transport_iv: string
+          kdf_salt: string
+          kdf_iterations: number
+          public_identity_key: string
+          public_transport_key: string
+        }
+      }>("/auth/password/login/totp", {
+        method: "POST",
+        body: {
+          session_ticket: pendingPasswordLogin.sessionTicket,
+          totp_code: code.trim(),
+        },
+      })
+
+      setAuthToken(response.token)
+      setToken(response.token)
+      setUser({
+        id: decodeJwtSubject(response.token),
+        username: pendingPasswordLogin.username,
+        handle: pendingPasswordLogin.handle,
+      })
+      setPendingPasswordLogin((current) =>
+        current
+          ? {
+            ...current,
+            kdfSalt: response.keys.kdf_salt,
+            kdfIterations: response.keys.kdf_iterations,
+          }
+          : current
+      )
+      setPendingKeys({
+        encrypted_identity_key: response.keys.encrypted_identity_key,
+        encrypted_identity_iv: response.keys.encrypted_identity_iv,
+        encrypted_transport_key: response.keys.encrypted_transport_key,
+        encrypted_transport_iv: response.keys.encrypted_transport_iv,
+        public_identity_key: response.keys.public_identity_key,
+        public_transport_key: response.keys.public_transport_key,
+      })
+      setPublicIdentityKey(response.keys.public_identity_key)
+      setPublicTransportKey(response.keys.public_transport_key)
+      setStatus("awaiting_master_password")
+    },
+    [pendingPasswordLogin]
+  )
+
+  const verifyRecoveryCode = React.useCallback(
+    async (code: string) => {
+      if (!pendingPasswordLogin) {
+        throw new Error("No pending login session")
+      }
+      const response = await apiFetch<{
+        token: string
+        keys: {
+          encrypted_identity_key: string
+          encrypted_identity_iv: string
+          encrypted_transport_key: string
+          encrypted_transport_iv: string
+          kdf_salt: string
+          kdf_iterations: number
+          public_identity_key: string
+          public_transport_key: string
+        }
+        remaining_recovery_codes: number
+      }>("/auth/password/login/recovery", {
+        method: "POST",
+        body: {
+          session_ticket: pendingPasswordLogin.sessionTicket,
+          recovery_code: normalizeRecoveryCode(code),
+        },
+      })
+
+      setAuthToken(response.token)
+      setToken(response.token)
+      setUser({
+        id: decodeJwtSubject(response.token),
+        username: pendingPasswordLogin.username,
+        handle: pendingPasswordLogin.handle,
+      })
+      setPendingPasswordLogin((current) =>
+        current
+          ? {
+            ...current,
+            kdfSalt: response.keys.kdf_salt,
+            kdfIterations: response.keys.kdf_iterations,
+          }
+          : current
+      )
+      setPendingKeys({
+        encrypted_identity_key: response.keys.encrypted_identity_key,
+        encrypted_identity_iv: response.keys.encrypted_identity_iv,
+        encrypted_transport_key: response.keys.encrypted_transport_key,
+        encrypted_transport_iv: response.keys.encrypted_transport_iv,
+        public_identity_key: response.keys.public_identity_key,
+        public_transport_key: response.keys.public_transport_key,
+      })
+      setPublicIdentityKey(response.keys.public_identity_key)
+      setPublicTransportKey(response.keys.public_transport_key)
+      setStatus("awaiting_master_password")
+
+      return { remainingCodes: response.remaining_recovery_codes }
+    },
+    [pendingPasswordLogin]
+  )
+
+  const unlockAfter2FA = React.useCallback(
+    async (masterPassword: string, savePassword = false) => {
+      if (!pendingPasswordLogin || !pendingKeys || !token) {
+        throw new Error("No pending login to unlock")
+      }
+      const masterKey = await deriveMasterKey(
+        masterPassword,
+        base64ToBytes(pendingPasswordLogin.kdfSalt),
+        pendingPasswordLogin.kdfIterations
+      )
+
+      const identityPrivateKey = await decryptPrivateKey(masterKey, {
+        ciphertext: pendingKeys.encrypted_identity_key,
+        iv: pendingKeys.encrypted_identity_iv,
+      })
+      const transportPrivateKey = await decryptPrivateKey(masterKey, {
+        ciphertext: pendingKeys.encrypted_transport_key,
+        iv: pendingKeys.encrypted_transport_iv,
+      })
+
+      if (
+        identityPrivateKey.length !== identitySecretKeyLength ||
+        transportPrivateKey.length !== transportSecretKeyLength
+      ) {
+        throw new Error("Invalid key material")
+      }
+
+      await persistActiveSession({
+        username: pendingPasswordLogin.username,
+        handle: pendingPasswordLogin.handle,
+        kdfSalt: pendingPasswordLogin.kdfSalt,
+        kdfIterations: pendingPasswordLogin.kdfIterations,
+        identityPrivateKey: {
+          ciphertext: pendingKeys.encrypted_identity_key,
+          iv: pendingKeys.encrypted_identity_iv,
+        },
+        transportPrivateKey: {
+          ciphertext: pendingKeys.encrypted_transport_key,
+          iv: pendingKeys.encrypted_transport_iv,
+        },
+        publicIdentityKey: pendingKeys.public_identity_key,
+        publicTransportKey: pendingKeys.public_transport_key,
+        token,
+        savePassword,
+      })
+
+      if (savePassword) {
+        await db.syncState.put({
+          key: "masterKey",
+          value: await exportMasterKey(masterKey),
+        })
+        await storeTransportKeyForSW(transportPrivateKey)
+      } else {
+        await clearTransportKeyForSW()
+      }
+
+      setMasterKey(masterKey)
+      setIdentityPrivateKey(identityPrivateKey)
+      setTransportPrivateKey(transportPrivateKey)
+      setPublicIdentityKey(pendingKeys.public_identity_key)
+      setPublicTransportKey(pendingKeys.public_transport_key)
+      setStatus("authenticated")
+      setPendingPasswordLogin(null)
+      setPendingKeys(null)
+    },
+    [pendingPasswordLogin, pendingKeys, token]
+  )
+
+  const cancelPasswordLogin = React.useCallback(() => {
+    setPendingPasswordLogin(null)
+    setPendingKeys(null)
+    setToken(null)
+    setAuthToken(null)
+    setUser(null)
+    setMasterKey(null)
+    setIdentityPrivateKey(null)
+    setPublicIdentityKey(null)
+    setTransportPrivateKey(null)
+    setPublicTransportKey(null)
+    setStatus("guest")
+  }, [])
+
+  const fetchAuthMethods = React.useCallback(async () => {
+    return apiFetch<AuthMethods>("/auth/methods")
+  }, [])
+
+  const addPasswordAuth = React.useCallback(
+    async (accountPassword: string, masterPassword: string) => {
+      if (!user?.username || !user.handle) {
+        throw new Error("User not available")
+      }
+      const session = await loadActiveSession()
+      if (!session) {
+        throw new Error("No active session")
+      }
+      const derivedMasterKey = await deriveMasterKey(
+        masterPassword,
+        base64ToBytes(session.kdfSalt),
+        session.kdfIterations
+      )
+      const identityPrivateKey = await decryptPrivateKey(
+        derivedMasterKey,
+        session.identityPrivateKey
+      )
+      const transportPrivateKey = await decryptPrivateKey(
+        derivedMasterKey,
+        session.transportPrivateKey
+      )
+      if (
+        identityPrivateKey.length !== identitySecretKeyLength ||
+        transportPrivateKey.length !== transportSecretKeyLength
+      ) {
+        throw new Error("Invalid master password")
+      }
+
+      const opaqueStart = await registerStart(accountPassword)
+      const startResponse = await apiFetch<{ opaque_response: string }>(
+        "/auth/password/register/start",
+        {
+          method: "POST",
+          body: {
+            username: user.username,
+            opaque_request: bytesToBase64(opaqueStart.request),
+          },
+        }
+      )
+      const opaqueFinish = await registerFinish(
+        opaqueStart.state,
+        base64ToBytes(startResponse.opaque_response)
+      )
+
+      const totpSecret = generateTotpSecret()
+      const totpUri = getTotpUri(totpSecret, user.handle)
+      const encryptedTotp = await encryptTotpSecret(
+        derivedMasterKey,
+        totpSecret
+      )
+
+      const onVerify = async (totpCode: string) => {
+        const response = await apiFetch<{ recovery_codes: string[] }>(
+          "/auth/password-2fa/add",
+          {
+            method: "POST",
+            body: {
+              opaque_request: bytesToBase64(opaqueStart.request),
+              opaque_finish: bytesToBase64(opaqueFinish),
+              totp_secret: totpSecret,
+              encrypted_totp_secret: encryptedTotp.ciphertext,
+              encrypted_totp_secret_iv: encryptedTotp.iv,
+              totp_code: totpCode.trim(),
+            },
+          }
+        )
+
+        return response.recovery_codes
+      }
+
+      return { totpSecret, totpUri, onVerify }
+    },
+    [user]
+  )
+
+  const removePasswordAuth = React.useCallback(async () => {
+    await apiFetch("/auth/password-2fa", { method: "DELETE" })
+  }, [])
+
+  const regenerateTotp = React.useCallback(async () => {
+    if (!masterKey) {
+      throw new Error("Master key unavailable")
+    }
+    if (!user?.handle) {
+      throw new Error("User not available")
+    }
+
+    const totpSecret = generateTotpSecret()
+    const totpUri = getTotpUri(totpSecret, user.handle)
+    const encryptedTotp = await encryptTotpSecret(masterKey, totpSecret)
+
+    const onVerify = async (totpCode: string) => {
+      const response = await apiFetch<{ recovery_codes: string[] }>(
+        "/auth/totp/regenerate",
+        {
+          method: "POST",
+          body: {
+            totp_secret: totpSecret,
+            encrypted_totp_secret: encryptedTotp.ciphertext,
+            encrypted_totp_secret_iv: encryptedTotp.iv,
+            totp_code: totpCode.trim(),
+          },
+        }
+      )
+      return response.recovery_codes
+    }
+
+    return { totpSecret, totpUri, onVerify }
+  }, [masterKey, user?.handle])
+
+  const regenerateRecoveryCodes = React.useCallback(async () => {
+    const response = await apiFetch<{ recovery_codes: string[] }>(
+      "/auth/totp/recovery-codes/regenerate",
+      { method: "POST" }
+    )
+    return response.recovery_codes
+  }, [])
+
+  const changeAccountPassword = React.useCallback(
+    async (currentPassword: string, newPassword: string) => {
+      // Step 1: Start password change - verify current password
+      const currentLoginState = await loginStart(currentPassword)
+      const startResponse = await apiFetch<{
+        opaque_response: string
+        change_ticket: string
+      }>("/auth/password/change/start", {
+        method: "POST",
+        body: {
+          opaque_request: bytesToBase64(currentLoginState.request),
+        },
+      })
+
+      // Step 2: Complete current password verification
+      const currentLoginFinish = await loginFinish(
+        currentLoginState.state,
+        base64ToBytes(startResponse.opaque_response)
+      )
+      await apiFetch("/auth/password/change/verify", {
+        method: "POST",
+        headers: {
+          "X-Change-Ticket": startResponse.change_ticket,
+        },
+        body: {
+          opaque_finish: bytesToBase64(currentLoginFinish.finishMessage),
+        },
+      })
+
+      // Step 3: Start new password registration
+      const newRegisterState = await registerStart(newPassword)
+      const newStartResponse = await apiFetch<{ opaque_response: string }>(
+        "/auth/password/change/new/start",
+        {
+          method: "POST",
+          body: {
+            change_ticket: startResponse.change_ticket,
+            opaque_request: bytesToBase64(newRegisterState.request),
+          },
+        }
+      )
+
+      // Step 4: Complete new password registration
+      const newRegisterFinish = await registerFinish(
+        newRegisterState.state,
+        base64ToBytes(newStartResponse.opaque_response)
+      )
+      await apiFetch("/auth/password/change/complete", {
+        method: "POST",
+        body: {
+          change_ticket: startResponse.change_ticket,
+          opaque_finish: bytesToBase64(newRegisterFinish),
+        },
+      })
+    },
+    []
+  )
+
   const logout = React.useCallback(() => {
     void clearSession(true)
   }, [clearSession])
@@ -1091,6 +1700,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       publicIdentityKey,
       transportPrivateKey,
       publicTransportKey,
+      capabilities,
       register,
       loginWithPasskey,
       unlock,
@@ -1105,6 +1715,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       fetchPasskeys,
       addPasskey,
       removePasskey,
+      registerWithPassword,
+      loginWithPassword,
+      verifyTotp,
+      verifyRecoveryCode,
+      unlockAfter2FA,
+      cancelPasswordLogin,
+      fetchAuthMethods,
+      addPasswordAuth,
+      removePasswordAuth,
+      regenerateTotp,
+      regenerateRecoveryCodes,
+      changeAccountPassword,
     }),
     [
       status,
@@ -1115,6 +1737,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       publicIdentityKey,
       transportPrivateKey,
       publicTransportKey,
+      capabilities,
       register,
       loginWithPasskey,
       unlock,
@@ -1129,6 +1752,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       fetchPasskeys,
       addPasskey,
       removePasskey,
+      registerWithPassword,
+      loginWithPassword,
+      verifyTotp,
+      verifyRecoveryCode,
+      unlockAfter2FA,
+      cancelPasswordLogin,
+      fetchAuthMethods,
+      addPasswordAuth,
+      removePasswordAuth,
+      regenerateTotp,
+      regenerateRecoveryCodes,
+      changeAccountPassword,
     ]
   )
 

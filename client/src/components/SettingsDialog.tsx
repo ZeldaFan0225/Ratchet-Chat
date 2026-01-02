@@ -2,11 +2,13 @@
 
 import * as React from "react"
 import { Ban, Bell, Camera, Check, ChevronLeft, ChevronRight, Copy, Eye, EyeOff, Fingerprint, Info, Key, Lock, LogOut, Monitor, Palette, Plus, Server, Shield, Trash2, User, X } from "lucide-react"
+import { QRCodeSVG } from "qrcode.react"
 
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { apiFetch } from "@/lib/api"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import {
   ResponsiveModal,
   ResponsiveModalContent,
@@ -24,7 +26,7 @@ import {
 } from "@/components/ui/breadcrumb"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
-import { useAuth, type SessionInfo, type PasskeyInfo } from "@/context/AuthContext"
+import { useAuth, type SessionInfo, type PasskeyInfo, type AuthMethods } from "@/context/AuthContext"
 import { useBlock } from "@/context/BlockContext"
 import { useCall } from "@/context/CallContext"
 import { useSync } from "@/context/SyncContext"
@@ -46,6 +48,7 @@ import { Separator } from "@/components/ui/separator"
 import { AppInfoDialog } from "@/components/AppInfoDialog"
 import { WhatsNewBadge } from "@/components/WhatsNewBadge"
 import { useWhatsNew } from "@/hooks/useWhatsNew"
+import { formatRecoveryCodes } from "@/lib/totp"
 
 function parseDeviceInfo(userAgent: string | null): string {
   if (!userAgent) return "Unknown device"
@@ -246,7 +249,26 @@ export function SettingsDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
-  const { user, publicIdentityKey, deleteAccount, fetchSessions, invalidateSession, invalidateAllOtherSessions, rotateTransportKey, getTransportKeyRotatedAt, fetchPasskeys, addPasskey, removePasskey } = useAuth()
+  const {
+    user,
+    publicIdentityKey,
+    deleteAccount,
+    fetchSessions,
+    invalidateSession,
+    invalidateAllOtherSessions,
+    rotateTransportKey,
+    getTransportKeyRotatedAt,
+    fetchPasskeys,
+    addPasskey,
+    removePasskey,
+    fetchAuthMethods,
+    addPasswordAuth,
+    removePasswordAuth,
+    regenerateTotp,
+    regenerateRecoveryCodes,
+    changeAccountPassword,
+    capabilities,
+  } = useAuth()
   const { blockedUsers, blockedServers, blockUser, unblockUser, blockServer, unblockServer } = useBlock()
   const { callState } = useCall()
   const { settings, updateSettings } = useSettings()
@@ -285,6 +307,40 @@ export function SettingsDialog({
   const [passkeyError, setPasskeyError] = React.useState<string | null>(null)
   const [newPasskeyName, setNewPasskeyName] = React.useState("")
 
+  // Auth method state
+  const [authMethods, setAuthMethods] = React.useState<AuthMethods | null>(null)
+  const [loadingAuthMethods, setLoadingAuthMethods] = React.useState(false)
+  const [authMethodsError, setAuthMethodsError] = React.useState<string | null>(null)
+  const [passwordSetupAccountPassword, setPasswordSetupAccountPassword] = React.useState("")
+  const [passwordSetupConfirmAccountPassword, setPasswordSetupConfirmAccountPassword] = React.useState("")
+  const [passwordSetupMasterPassword, setPasswordSetupMasterPassword] = React.useState("")
+  const [passwordSetupConfirmMasterPassword, setPasswordSetupConfirmMasterPassword] = React.useState("")
+  const [passwordSetupError, setPasswordSetupError] = React.useState<string | null>(null)
+  const [passwordSetupLoading, setPasswordSetupLoading] = React.useState(false)
+  const [passwordActionError, setPasswordActionError] = React.useState<string | null>(null)
+  const [passwordActionLoading, setPasswordActionLoading] = React.useState(false)
+  const [totpFlow, setTotpFlow] = React.useState<{
+    title: string
+    description: string
+    totpSecret: string
+    totpUri: string
+    onVerify: (code: string) => Promise<string[]>
+  } | null>(null)
+  const [totpCode, setTotpCode] = React.useState("")
+  const [totpFlowError, setTotpFlowError] = React.useState<string | null>(null)
+  const [totpFlowLoading, setTotpFlowLoading] = React.useState(false)
+  const [recoveryCodes, setRecoveryCodes] = React.useState<string[]>([])
+  const [recoveryModalOpen, setRecoveryModalOpen] = React.useState(false)
+  const [recoveryConfirmed, setRecoveryConfirmed] = React.useState(false)
+
+  // Password change state
+  const [passwordChangeDialogOpen, setPasswordChangeDialogOpen] = React.useState(false)
+  const [passwordChangeCurrentPassword, setPasswordChangeCurrentPassword] = React.useState("")
+  const [passwordChangeNewPassword, setPasswordChangeNewPassword] = React.useState("")
+  const [passwordChangeConfirmPassword, setPasswordChangeConfirmPassword] = React.useState("")
+  const [passwordChangeError, setPasswordChangeError] = React.useState<string | null>(null)
+  const [passwordChangeLoading, setPasswordChangeLoading] = React.useState(false)
+
   // Block list state
   const [newBlockedUser, setNewBlockedUser] = React.useState("")
   const [newBlockedServer, setNewBlockedServer] = React.useState("")
@@ -300,6 +356,11 @@ export function SettingsDialog({
 
   const identityKey = publicIdentityKey ?? ""
   const identityKeyPreview = formatKeyPreview(identityKey)
+  const password2faAvailable = capabilities?.password_2fa === true
+  const recoveryCodesText = React.useMemo(
+    () => (recoveryCodes.length > 0 ? formatRecoveryCodes(recoveryCodes) : ""),
+    [recoveryCodes]
+  )
 
   const deleteLabel = user?.handle ?? user?.username ?? ""
   const isDeleteMatch = deleteLabel !== "" && deleteConfirm.trim() === deleteLabel
@@ -363,6 +424,19 @@ export function SettingsDialog({
     }
   }, [fetchPasskeys])
 
+  const loadAuthMethods = React.useCallback(async () => {
+    setLoadingAuthMethods(true)
+    setAuthMethodsError(null)
+    try {
+      const data = await fetchAuthMethods()
+      setAuthMethods(data)
+    } catch {
+      setAuthMethodsError("Unable to load authentication methods")
+    } finally {
+      setLoadingAuthMethods(false)
+    }
+  }, [fetchAuthMethods])
+
   const handleAddPasskey = React.useCallback(async () => {
     setAddingPasskey(true)
     setPasskeyError(null)
@@ -410,13 +484,233 @@ export function SettingsDialog({
     }
   }, [removePasskey, passkeys.length])
 
+  const handlePasswordSetupStart = React.useCallback(async () => {
+    setPasswordSetupError(null)
+    setPasswordActionError(null)
+    const accountPassword = passwordSetupAccountPassword.trim()
+    const confirmAccountPassword = passwordSetupConfirmAccountPassword.trim()
+    const masterPassword = passwordSetupMasterPassword.trim()
+    const confirmMasterPassword = passwordSetupConfirmMasterPassword.trim()
+
+    if (accountPassword.length < 12) {
+      setPasswordSetupError("Account password must be at least 12 characters")
+      return
+    }
+    if (accountPassword !== confirmAccountPassword) {
+      setPasswordSetupError("Account passwords do not match")
+      return
+    }
+    if (masterPassword.length < 12) {
+      setPasswordSetupError("Master password must be at least 12 characters")
+      return
+    }
+    if (masterPassword !== confirmMasterPassword) {
+      setPasswordSetupError("Master passwords do not match")
+      return
+    }
+
+    setPasswordSetupLoading(true)
+    try {
+      const setup = await addPasswordAuth(accountPassword, masterPassword)
+      setTotpFlow({
+        title: "Verify your authenticator",
+        description: "Scan the QR code, then enter the 6-digit code to finish setup.",
+        totpSecret: setup.totpSecret,
+        totpUri: setup.totpUri,
+        onVerify: setup.onVerify,
+      })
+      setTotpCode("")
+      setTotpFlowError(null)
+      setPasswordSetupAccountPassword("")
+      setPasswordSetupConfirmAccountPassword("")
+      setPasswordSetupMasterPassword("")
+      setPasswordSetupConfirmMasterPassword("")
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to start setup"
+      setPasswordSetupError(message)
+    } finally {
+      setPasswordSetupLoading(false)
+    }
+  }, [
+    passwordSetupAccountPassword,
+    passwordSetupConfirmAccountPassword,
+    passwordSetupMasterPassword,
+    passwordSetupConfirmMasterPassword,
+    addPasswordAuth,
+  ])
+
+  const handleRegenerateTotp = React.useCallback(async () => {
+    setPasswordActionError(null)
+    setPasswordActionLoading(true)
+    try {
+      const setup = await regenerateTotp()
+      setTotpFlow({
+        title: "Regenerate authenticator",
+        description: "Scan the new QR code, then enter the 6-digit code to confirm.",
+        totpSecret: setup.totpSecret,
+        totpUri: setup.totpUri,
+        onVerify: setup.onVerify,
+      })
+      setTotpCode("")
+      setTotpFlowError(null)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to regenerate 2FA"
+      setPasswordActionError(message)
+    } finally {
+      setPasswordActionLoading(false)
+    }
+  }, [regenerateTotp])
+
+  const handleTotpFlowVerify = React.useCallback(async () => {
+    if (!totpFlow) {
+      return
+    }
+    setTotpFlowError(null)
+    setTotpFlowLoading(true)
+    try {
+      const codes = await totpFlow.onVerify(totpCode.trim())
+      setRecoveryCodes(codes)
+      setRecoveryConfirmed(false)
+      setRecoveryModalOpen(true)
+      setTotpFlow(null)
+      setTotpCode("")
+      void loadAuthMethods()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to verify code"
+      setTotpFlowError(message)
+    } finally {
+      setTotpFlowLoading(false)
+    }
+  }, [totpFlow, totpCode, loadAuthMethods])
+
+  const handleRegenerateRecoveryCodes = React.useCallback(async () => {
+    setPasswordActionError(null)
+    setPasswordActionLoading(true)
+    try {
+      const codes = await regenerateRecoveryCodes()
+      setRecoveryCodes(codes)
+      setRecoveryConfirmed(false)
+      setRecoveryModalOpen(true)
+      void loadAuthMethods()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to regenerate recovery codes"
+      setPasswordActionError(message)
+    } finally {
+      setPasswordActionLoading(false)
+    }
+  }, [regenerateRecoveryCodes, loadAuthMethods])
+
+  const handleRemovePasswordLogin = React.useCallback(async () => {
+    setPasswordActionError(null)
+    if (!authMethods?.has_passkey) {
+      setPasswordActionError("Add a passkey before removing password login")
+      return
+    }
+    const confirmed = window.confirm(
+      "Remove password login? You'll only be able to sign in with passkeys."
+    )
+    if (!confirmed) return
+
+    setPasswordActionLoading(true)
+    try {
+      await removePasswordAuth()
+      void loadAuthMethods()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to remove password login"
+      setPasswordActionError(message)
+    } finally {
+      setPasswordActionLoading(false)
+    }
+  }, [authMethods?.has_passkey, removePasswordAuth, loadAuthMethods])
+
+  const handleTotpFlowChange = React.useCallback((open: boolean) => {
+    if (!open) {
+      setTotpFlow(null)
+      setTotpCode("")
+      setTotpFlowError(null)
+      setTotpFlowLoading(false)
+    }
+  }, [])
+
+  const handleRecoveryModalChange = React.useCallback(
+    (open: boolean) => {
+      if (!open && !recoveryConfirmed) {
+        return
+      }
+      setRecoveryModalOpen(open)
+    },
+    [recoveryConfirmed]
+  )
+
+  const handleRecoveryModalDone = React.useCallback(() => {
+    if (!recoveryConfirmed) {
+      return
+    }
+    setRecoveryModalOpen(false)
+    setRecoveryConfirmed(false)
+    setRecoveryCodes([])
+  }, [recoveryConfirmed])
+
+  const handlePasswordChangeDialogChange = React.useCallback((open: boolean) => {
+    if (!open) {
+      setPasswordChangeCurrentPassword("")
+      setPasswordChangeNewPassword("")
+      setPasswordChangeConfirmPassword("")
+      setPasswordChangeError(null)
+      setPasswordChangeLoading(false)
+    }
+    setPasswordChangeDialogOpen(open)
+  }, [])
+
+  const handlePasswordChange = React.useCallback(async () => {
+    setPasswordChangeError(null)
+    const currentPassword = passwordChangeCurrentPassword.trim()
+    const newPassword = passwordChangeNewPassword.trim()
+    const confirmPassword = passwordChangeConfirmPassword.trim()
+
+    if (!currentPassword) {
+      setPasswordChangeError("Current password is required")
+      return
+    }
+    if (newPassword.length < 12) {
+      setPasswordChangeError("New password must be at least 12 characters")
+      return
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordChangeError("Passwords do not match")
+      return
+    }
+    if (currentPassword === newPassword) {
+      setPasswordChangeError("New password must be different from current password")
+      return
+    }
+
+    setPasswordChangeLoading(true)
+    try {
+      await changeAccountPassword(currentPassword, newPassword)
+      handlePasswordChangeDialogChange(false)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to change password"
+      setPasswordChangeError(message)
+    } finally {
+      setPasswordChangeLoading(false)
+    }
+  }, [
+    passwordChangeCurrentPassword,
+    passwordChangeNewPassword,
+    passwordChangeConfirmPassword,
+    changeAccountPassword,
+    handlePasswordChangeDialogChange,
+  ])
+
   React.useEffect(() => {
     if (open) {
       void loadSessions()
       void loadTransportRotation()
       void loadPasskeys()
+      void loadAuthMethods()
     }
-  }, [open, loadSessions, loadTransportRotation, loadPasskeys])
+  }, [open, loadSessions, loadTransportRotation, loadPasskeys, loadAuthMethods])
 
   React.useEffect(() => {
     if (!open) {
@@ -426,6 +720,29 @@ export function SettingsDialog({
       setRotateTransportError(null)
       setPasskeyError(null)
       setNewPasskeyName("")
+      setAuthMethods(null)
+      setAuthMethodsError(null)
+      setPasswordSetupAccountPassword("")
+      setPasswordSetupConfirmAccountPassword("")
+      setPasswordSetupMasterPassword("")
+      setPasswordSetupConfirmMasterPassword("")
+      setPasswordSetupError(null)
+      setPasswordSetupLoading(false)
+      setPasswordActionError(null)
+      setPasswordActionLoading(false)
+      setTotpFlow(null)
+      setTotpCode("")
+      setTotpFlowError(null)
+      setTotpFlowLoading(false)
+      setRecoveryCodes([])
+      setRecoveryModalOpen(false)
+      setRecoveryConfirmed(false)
+      setPasswordChangeDialogOpen(false)
+      setPasswordChangeCurrentPassword("")
+      setPasswordChangeNewPassword("")
+      setPasswordChangeConfirmPassword("")
+      setPasswordChangeError(null)
+      setPasswordChangeLoading(false)
       setNewBlockedUser("")
       setNewBlockedServer("")
       setBlockError(null)
@@ -1119,10 +1436,14 @@ export function SettingsDialog({
       <div className="space-y-8 py-4">
         <div className="space-y-4">
           <div className="space-y-1">
-            <h3 className="text-sm font-medium">Sign-in methods</h3>
+            <h3 className="text-sm font-medium">Authentication methods</h3>
             <p className="text-xs text-muted-foreground">
-              Manage passkeys tied to this account.
+              Manage passkeys and password-based access for this account.
             </p>
+          </div>
+
+          <div className="space-y-2">
+            <h4 className="text-sm font-medium">Passkeys</h4>
           </div>
 
           {loadingPasskeys ? (
@@ -1189,6 +1510,159 @@ export function SettingsDialog({
               <Plus className="mr-2 h-4 w-4" />
               {addingPasskey ? "Adding passkey..." : "Add Passkey"}
             </Button>
+          </div>
+
+          <Separator />
+
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <h4 className="text-sm font-medium">Password + 2FA</h4>
+              <p className="text-xs text-muted-foreground">
+                Set up a password login with a mandatory authenticator code.
+              </p>
+            </div>
+
+            {!password2faAvailable ? (
+              capabilities ? (
+                <p className="text-xs text-muted-foreground">
+                  Password authentication is disabled on this server.
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Checking server capabilities...
+                </p>
+              )
+            ) : loadingAuthMethods ? (
+              <p className="text-sm text-muted-foreground">Loading authentication status...</p>
+            ) : authMethodsError ? (
+              <p className="text-sm text-destructive">{authMethodsError}</p>
+            ) : authMethods?.has_password_2fa ? (
+              <div className="space-y-3">
+                <div className="flex items-start justify-between rounded-lg border p-3">
+                  <div className="space-y-1">
+                    <span className="text-sm font-medium">Password login enabled</span>
+                    <p className="text-xs text-muted-foreground">
+                      Requires a password and authenticator code to sign in.
+                    </p>
+                  </div>
+                  <Badge variant="outline">Enabled</Badge>
+                </div>
+
+                {passwordActionError ? (
+                  <p className="text-sm text-destructive">{passwordActionError}</p>
+                ) : null}
+
+                <div className="grid gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={() => setPasswordChangeDialogOpen(true)}
+                    disabled={passwordActionLoading}
+                    className="w-full"
+                  >
+                    Change Account Password
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={handleRegenerateTotp}
+                    disabled={passwordActionLoading}
+                    className="w-full"
+                  >
+                    Regenerate 2FA Code
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={handleRegenerateRecoveryCodes}
+                    disabled={passwordActionLoading}
+                    className="w-full"
+                  >
+                    Regenerate Recovery Codes
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    onClick={handleRemovePasswordLogin}
+                    disabled={passwordActionLoading || !authMethods?.has_passkey}
+                    className="w-full"
+                  >
+                    Remove Password Login
+                  </Button>
+                </div>
+
+                {!authMethods?.has_passkey ? (
+                  <p className="text-xs text-muted-foreground">
+                    Add a passkey before removing password login.
+                  </p>
+                ) : null}
+              </div>
+            ) : (
+              <div className="space-y-3 rounded-lg border p-4">
+                <h5 className="text-sm font-medium">Set up Password + 2FA</h5>
+                <div className="space-y-2">
+                  <Label htmlFor="password-setup-account" className="text-xs">
+                    Account password
+                  </Label>
+                  <Input
+                    id="password-setup-account"
+                    type="password"
+                    value={passwordSetupAccountPassword}
+                    onChange={(event) => setPasswordSetupAccountPassword(event.target.value)}
+                    placeholder="minimum 12 characters"
+                    disabled={passwordSetupLoading}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="password-setup-account-confirm" className="text-xs">
+                    Confirm account password
+                  </Label>
+                  <Input
+                    id="password-setup-account-confirm"
+                    type="password"
+                    value={passwordSetupConfirmAccountPassword}
+                    onChange={(event) => setPasswordSetupConfirmAccountPassword(event.target.value)}
+                    placeholder="confirm account password"
+                    disabled={passwordSetupLoading}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="password-setup-master" className="text-xs">
+                    Master password
+                  </Label>
+                  <Input
+                    id="password-setup-master"
+                    type="password"
+                    value={passwordSetupMasterPassword}
+                    onChange={(event) => setPasswordSetupMasterPassword(event.target.value)}
+                    placeholder="your existing master password"
+                    disabled={passwordSetupLoading}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="password-setup-master-confirm" className="text-xs">
+                    Confirm master password
+                  </Label>
+                  <Input
+                    id="password-setup-master-confirm"
+                    type="password"
+                    value={passwordSetupConfirmMasterPassword}
+                    onChange={(event) => setPasswordSetupConfirmMasterPassword(event.target.value)}
+                    placeholder="confirm master password"
+                    disabled={passwordSetupLoading}
+                  />
+                </div>
+
+                {passwordSetupError ? (
+                  <p className="text-sm text-destructive">{passwordSetupError}</p>
+                ) : null}
+
+                <Button
+                  variant="accept"
+                  onClick={handlePasswordSetupStart}
+                  disabled={passwordSetupLoading}
+                  className="w-full"
+                >
+                  {passwordSetupLoading ? "Starting setup..." : "Continue to 2FA setup"}
+                </Button>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1751,6 +2225,149 @@ export function SettingsDialog({
             </button>
           </AppInfoDialog>
         </div>
+
+        <Dialog open={Boolean(totpFlow)} onOpenChange={handleTotpFlowChange}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>{totpFlow?.title ?? "Verify authenticator"}</DialogTitle>
+              <DialogDescription>{totpFlow?.description ?? ""}</DialogDescription>
+            </DialogHeader>
+            {totpFlow ? (
+              <div className="space-y-4">
+                <div className="flex flex-col items-center gap-3 rounded-lg border bg-muted/40 p-4">
+                  <QRCodeSVG value={totpFlow.totpUri} size={180} />
+                  <div className="text-xs text-muted-foreground text-center">
+                    Manual code: <span className="font-mono text-foreground">{totpFlow.totpSecret}</span>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="totp-flow-code" className="text-xs">
+                    Verification code
+                  </Label>
+                  <Input
+                    id="totp-flow-code"
+                    value={totpCode}
+                    onChange={(event) => setTotpCode(event.target.value)}
+                    placeholder="123456"
+                    autoComplete="one-time-code"
+                  />
+                </div>
+                {totpFlowError ? (
+                  <p className="text-sm text-destructive">{totpFlowError}</p>
+                ) : null}
+                <DialogFooter>
+                  <Button
+                    onClick={handleTotpFlowVerify}
+                    disabled={totpFlowLoading || totpCode.trim().length < 6}
+                  >
+                    {totpFlowLoading ? "Verifying..." : "Verify"}
+                  </Button>
+                </DialogFooter>
+              </div>
+            ) : null}
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={recoveryModalOpen} onOpenChange={handleRecoveryModalChange}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Save your recovery codes</DialogTitle>
+              <DialogDescription>
+                Store these codes somewhere safe. Each code can be used once if you lose access to your authenticator.
+              </DialogDescription>
+            </DialogHeader>
+            <ScrollArea className="h-40 rounded-md border bg-muted/50 p-3">
+              <pre className="whitespace-pre-wrap font-mono text-xs text-foreground">
+                {recoveryCodesText}
+              </pre>
+            </ScrollArea>
+            <div className="flex items-center space-x-2">
+              <Switch
+                id="recovery-confirmed"
+                checked={recoveryConfirmed}
+                onCheckedChange={setRecoveryConfirmed}
+              />
+              <Label htmlFor="recovery-confirmed" className="text-sm">
+                I have saved these codes
+              </Label>
+            </div>
+            <DialogFooter>
+              <Button onClick={handleRecoveryModalDone} disabled={!recoveryConfirmed}>
+                Continue
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={passwordChangeDialogOpen} onOpenChange={handlePasswordChangeDialogChange}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Change Account Password</DialogTitle>
+              <DialogDescription>
+                Enter your current password and choose a new password for your account.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="password-change-current" className="text-xs">
+                  Current password
+                </Label>
+                <Input
+                  id="password-change-current"
+                  type="password"
+                  value={passwordChangeCurrentPassword}
+                  onChange={(event) => setPasswordChangeCurrentPassword(event.target.value)}
+                  placeholder="Enter current password"
+                  disabled={passwordChangeLoading}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="password-change-new" className="text-xs">
+                  New password
+                </Label>
+                <Input
+                  id="password-change-new"
+                  type="password"
+                  value={passwordChangeNewPassword}
+                  onChange={(event) => setPasswordChangeNewPassword(event.target.value)}
+                  placeholder="Minimum 12 characters"
+                  disabled={passwordChangeLoading}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="password-change-confirm" className="text-xs">
+                  Confirm new password
+                </Label>
+                <Input
+                  id="password-change-confirm"
+                  type="password"
+                  value={passwordChangeConfirmPassword}
+                  onChange={(event) => setPasswordChangeConfirmPassword(event.target.value)}
+                  placeholder="Confirm new password"
+                  disabled={passwordChangeLoading}
+                />
+              </div>
+              {passwordChangeError ? (
+                <p className="text-sm text-destructive">{passwordChangeError}</p>
+              ) : null}
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => handlePasswordChangeDialogChange(false)}
+                  disabled={passwordChangeLoading}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handlePasswordChange}
+                  disabled={passwordChangeLoading}
+                >
+                  {passwordChangeLoading ? "Changing..." : "Change Password"}
+                </Button>
+              </DialogFooter>
+            </div>
+          </DialogContent>
+        </Dialog>
       </ResponsiveModalContent>
     </ResponsiveModal>
   )

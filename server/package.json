@@ -20,6 +20,7 @@
     "file-type": "^21.2.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
+    "otpauth": "^9.4.1",
     "socket.io": "^4.7.5",
     "uuid": "^13.0.0",
     "web-push": "^3.6.7",

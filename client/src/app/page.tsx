@@ -17,7 +17,7 @@ export default function Home() {
     )
   }
 
-  if (status === "guest") {
+  if (status === "guest" || status === "awaiting_2fa" || status === "awaiting_master_password") {
     return <AuthScreen />
   }
 
