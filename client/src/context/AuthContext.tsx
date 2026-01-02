@@ -1488,11 +1488,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       const opaqueStart = await registerStart(accountPassword)
       const startResponse = await apiFetch<{ opaque_response: string }>(
-        "/auth/password/register/start",
+        "/auth/password-2fa/add/start",
         {
           method: "POST",
           body: {
-            username: user.username,
             opaque_request: bytesToBase64(opaqueStart.request),
           },
         }
@@ -1515,7 +1514,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           {
             method: "POST",
             body: {
-              opaque_request: bytesToBase64(opaqueStart.request),
               opaque_finish: bytesToBase64(opaqueFinish),
               totp_secret: totpSecret,
               encrypted_totp_secret: encryptedTotp.ciphertext,

@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Ban, Bell, Camera, Check, ChevronLeft, ChevronRight, Copy, Eye, EyeOff, Fingerprint, Info, Key, Lock, LogOut, Monitor, Palette, Plus, Server, Shield, Trash2, User, X } from "lucide-react"
+import { Ban, Bell, Camera, Check, ChevronLeft, ChevronRight, Copy, Eye, EyeOff, Fingerprint, Key, Lock, LogOut, Monitor, Palette, Plus, Server, Shield, Trash2, User, X } from "lucide-react"
 import { QRCodeSVG } from "qrcode.react"
 
 import { Button } from "@/components/ui/button"
@@ -45,7 +45,7 @@ import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
-import { AppInfoDialog } from "@/components/AppInfoDialog"
+import { RecoveryCodesDialog } from "@/components/RecoveryCodesDialog"
 import { WhatsNewBadge } from "@/components/WhatsNewBadge"
 import { useWhatsNew } from "@/hooks/useWhatsNew"
 import { formatRecoveryCodes } from "@/lib/totp"
@@ -2206,25 +2206,6 @@ export function SettingsDialog({
             </ScrollArea>
           )}
         </div>
-        <Separator />
-        <div className="py-2">
-          <AppInfoDialog defaultTab={hasNewVersion ? "changelog" : "status"} onTabChange={(tab) => {
-            if (tab === "changelog") {
-              markAsSeen()
-            }
-          }}>
-            <button
-              type="button"
-              className="relative flex w-full items-center justify-center gap-2 rounded-md py-1.5 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground"
-            >
-              <Info className="h-3.5 w-3.5" />
-              <span>
-                {currentVersion === "unknown" ? "Ratchet Chat" : `v${currentVersion}`}
-              </span>
-              {hasNewVersion && <WhatsNewBadge className="relative right-auto top-auto" />}
-            </button>
-          </AppInfoDialog>
-        </div>
 
         <Dialog open={Boolean(totpFlow)} onOpenChange={handleTotpFlowChange}>
           <DialogContent className="sm:max-w-md">
@@ -2235,7 +2216,9 @@ export function SettingsDialog({
             {totpFlow ? (
               <div className="space-y-4">
                 <div className="flex flex-col items-center gap-3 rounded-lg border bg-muted/40 p-4">
-                  <QRCodeSVG value={totpFlow.totpUri} size={180} />
+                  <div className="rounded-md border-2 border-white bg-white p-2">
+                    <QRCodeSVG value={totpFlow.totpUri} size={180} />
+                  </div>
                   <div className="text-xs text-muted-foreground text-center">
                     Manual code: <span className="font-mono text-foreground">{totpFlow.totpSecret}</span>
                   </div>
@@ -2268,36 +2251,14 @@ export function SettingsDialog({
           </DialogContent>
         </Dialog>
 
-        <Dialog open={recoveryModalOpen} onOpenChange={handleRecoveryModalChange}>
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle>Save your recovery codes</DialogTitle>
-              <DialogDescription>
-                Store these codes somewhere safe. Each code can be used once if you lose access to your authenticator.
-              </DialogDescription>
-            </DialogHeader>
-            <ScrollArea className="h-40 rounded-md border bg-muted/50 p-3">
-              <pre className="whitespace-pre-wrap font-mono text-xs text-foreground">
-                {recoveryCodesText}
-              </pre>
-            </ScrollArea>
-            <div className="flex items-center space-x-2">
-              <Switch
-                id="recovery-confirmed"
-                checked={recoveryConfirmed}
-                onCheckedChange={setRecoveryConfirmed}
-              />
-              <Label htmlFor="recovery-confirmed" className="text-sm">
-                I have saved these codes
-              </Label>
-            </div>
-            <DialogFooter>
-              <Button onClick={handleRecoveryModalDone} disabled={!recoveryConfirmed}>
-                Continue
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+        <RecoveryCodesDialog
+          open={recoveryModalOpen}
+          onOpenChange={handleRecoveryModalChange}
+          recoveryCodesText={recoveryCodesText}
+          recoveryConfirmed={recoveryConfirmed}
+          onRecoveryConfirmedChange={setRecoveryConfirmed}
+          onDone={handleRecoveryModalDone}
+        />
 
         <Dialog open={passwordChangeDialogOpen} onOpenChange={handlePasswordChangeDialogChange}>
           <DialogContent className="sm:max-w-md">

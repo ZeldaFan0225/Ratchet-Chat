@@ -7,6 +7,7 @@ import { QRCodeSVG } from "qrcode.react"
 
 import { useAuth } from "@/context/AuthContext"
 import { getInstanceHost, normalizeHandle, splitHandle } from "@/lib/handles"
+import { getSessionNotificationsEnabled, setSessionNotificationsEnabled } from "@/lib/push"
 import { formatRecoveryCodes } from "@/lib/totp"
 import { Button } from "@/components/ui/button"
 import {
@@ -16,7 +17,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { RecoveryCodesDialog } from "@/components/RecoveryCodesDialog"
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -95,6 +96,7 @@ export function AuthScreen() {
   const [masterUnlockLoading, setMasterUnlockLoading] = React.useState(false)
   const [masterUnlockError, setMasterUnlockError] = React.useState<string | null>(null)
   const [savePasswordAfter2fa, setSavePasswordAfter2fa] = React.useState(false)
+  const [sessionNotifications, setSessionNotifications] = React.useState(true)
   const [postRegisterLogin, setPostRegisterLogin] = React.useState<{
     username: string
     accountPassword: string
@@ -133,6 +135,15 @@ export function AuthScreen() {
       setPostRegisterLogin(null)
     }
   }, [status])
+
+  React.useEffect(() => {
+    getSessionNotificationsEnabled().then(setSessionNotifications)
+  }, [])
+
+  const handleSessionNotificationsChange = React.useCallback((checked: boolean) => {
+    setSessionNotifications(checked)
+    void setSessionNotificationsEnabled(checked)
+  }, [])
 
   const validateLocalHandle = React.useCallback(
     (value: string) => {
@@ -564,6 +575,16 @@ export function AuthScreen() {
                 Remember password on this device
               </Label>
             </div>
+            <div className="flex items-center space-x-2">
+              <Switch
+                id="session-notifications"
+                checked={sessionNotifications}
+                onCheckedChange={handleSessionNotificationsChange}
+              />
+              <Label htmlFor="session-notifications" className="text-sm">
+                Enable notifications on this device
+              </Label>
+            </div>
             {remainingRecoveryCodes !== null ? (
               <p className="text-xs text-muted-foreground">
                 Recovery codes remaining: {remainingRecoveryCodes}
@@ -812,7 +833,9 @@ export function AuthScreen() {
                           </p>
                         </div>
                         <div className="flex flex-col items-center gap-3 rounded-lg border bg-muted/40 p-4">
+                        <div className="rounded-md border-2 border-white bg-white p-2">
                           <QRCodeSVG value={passwordRegistration.totpUri} size={180} />
+                        </div>
                           <div className="text-xs text-muted-foreground text-center">
                             Manual code: <span className="font-mono text-foreground">{passwordRegistration.totpSecret}</span>
                           </div>
@@ -1126,36 +1149,14 @@ export function AuthScreen() {
         </CardContent>
       </Card>
 
-      <Dialog open={recoveryModalOpen} onOpenChange={handleRecoveryModalChange}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Save your recovery codes</DialogTitle>
-            <DialogDescription>
-              Store these codes somewhere safe. Each code can be used once if you lose access to your authenticator.
-            </DialogDescription>
-          </DialogHeader>
-          <ScrollArea className="h-40 rounded-md border bg-muted/50 p-3">
-            <pre className="whitespace-pre-wrap font-mono text-xs text-foreground">
-              {recoveryCodesText}
-            </pre>
-          </ScrollArea>
-          <div className="flex items-center space-x-2">
-            <Switch
-              id="recovery-confirmed"
-              checked={recoveryConfirmed}
-              onCheckedChange={setRecoveryConfirmed}
-            />
-            <Label htmlFor="recovery-confirmed" className="text-sm">
-              I have saved these codes
-            </Label>
-          </div>
-          <DialogFooter>
-            <Button onClick={handleRecoveryModalDone} disabled={!recoveryConfirmed}>
-              Continue
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <RecoveryCodesDialog
+        open={recoveryModalOpen}
+        onOpenChange={handleRecoveryModalChange}
+        recoveryCodesText={recoveryCodesText}
+        recoveryConfirmed={recoveryConfirmed}
+        onRecoveryConfirmedChange={setRecoveryConfirmed}
+        onDone={handleRecoveryModalDone}
+      />
     </div>
   )
 }

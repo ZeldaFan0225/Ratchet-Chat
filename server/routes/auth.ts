@@ -249,8 +249,11 @@ const masterPasswordChangeSchema = z.object({
   encrypted_totp_secret_iv: z.string().optional(),
 });
 
-const password2faAddSchema = z.object({
+const password2faAddStartSchema = z.object({
   opaque_request: z.string().min(1),
+});
+
+const password2faAddFinishSchema = z.object({
   opaque_finish: z.string().min(1),
   totp_secret: z.string().min(16).max(64),
   encrypted_totp_secret: z.string().min(1),
@@ -290,16 +293,23 @@ type TotpSessionTicket = {
 };
 
 const opaqueRegistrationSessions = new Map<string, OpaqueRegistrationSession>();
+const opaquePasswordAddSessions = new Map<string, OpaqueRegistrationSession>();
 const opaqueLoginSessions = new Map<string, OpaqueLoginSession>();
 const loginBackoff = new Map<string, BackoffEntry>();
 const totpSessionTickets = new Map<string, TotpSessionTicket>();
 
 const sessionKey = (username: string) => username;
+const passwordAddSessionKey = (userId: string) => userId;
 
 const cleanupSessions = (now: number) => {
   for (const [key, session] of opaqueRegistrationSessions) {
     if (session.expiresAt <= now) {
       opaqueRegistrationSessions.delete(key);
+    }
+  }
+  for (const [key, session] of opaquePasswordAddSessions) {
+    if (session.expiresAt <= now) {
+      opaquePasswordAddSessions.delete(key);
     }
   }
   for (const [key, session] of opaqueLoginSessions) {
@@ -2546,6 +2556,67 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
   });
 
   // Add password + 2FA to a passkey-only account
+  router.post("/password-2fa/add/start", authenticateToken, async (req: Request, res: Response) => {
+    if (!PASSWORD_2FA_ENABLED) {
+      return res.status(403).json({ error: "Password authentication is disabled" });
+    }
+
+    if (!req.user) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const parsed = password2faAddStartSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid request" });
+    }
+
+    try {
+      const user = await prisma.user.findUnique({
+        where: { id: req.user.id },
+        select: {
+          id: true,
+          username: true,
+          totp_enabled: true,
+          opaque_password_file: true,
+        },
+      });
+
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      if (user.totp_enabled && user.opaque_password_file) {
+        return res.status(400).json({ error: "Password + 2FA already enabled" });
+      }
+
+      cleanupSessions(Date.now());
+
+      let opaqueResponseState: { response: Uint8Array; state: ServerRegistrationState };
+      try {
+        opaqueResponseState = await registerResponse(
+          user.username,
+          Buffer.from(parsed.data.opaque_request, "base64")
+        );
+      } catch {
+        return res.status(400).json({ error: "Invalid OPAQUE parameters" });
+      }
+
+      const expiresAt = Date.now() + OPAQUE_SESSION_TTL_MS;
+      opaquePasswordAddSessions.set(passwordAddSessionKey(user.id), {
+        username: user.username,
+        state: opaqueResponseState.state,
+        expiresAt,
+      });
+
+      return res.json({
+        opaque_response: Buffer.from(opaqueResponseState.response).toString("base64"),
+      });
+    } catch (error) {
+      console.error("Error starting password + 2FA setup:", error);
+      return res.status(500).json({ error: "Failed to start password + 2FA setup" });
+    }
+  });
+
   router.post("/password-2fa/add", authenticateToken, async (req: Request, res: Response) => {
     if (!PASSWORD_2FA_ENABLED) {
       return res.status(403).json({ error: "Password authentication is disabled" });
@@ -2555,12 +2626,12 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
-    const parsed = password2faAddSchema.safeParse(req.body);
+    const parsed = password2faAddFinishSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: "Invalid request" });
     }
 
-    const { opaque_request, opaque_finish, totp_secret, encrypted_totp_secret, encrypted_totp_secret_iv, totp_code } = parsed.data;
+    const { opaque_finish, totp_secret, encrypted_totp_secret, encrypted_totp_secret_iv, totp_code } = parsed.data;
 
     try {
       const user = await prisma.user.findUnique({
@@ -2582,59 +2653,62 @@ export const createAuthRouter = (prisma: PrismaClient, io?: SocketIOServer) => {
         return res.status(400).json({ error: "Password + 2FA already enabled" });
       }
 
+      const sessionKeyValue = passwordAddSessionKey(user.id);
+      const session = opaquePasswordAddSessions.get(sessionKeyValue);
+      if (!session || session.expiresAt <= Date.now()) {
+        opaquePasswordAddSessions.delete(sessionKeyValue);
+        return res.status(400).json({ error: "OPAQUE session expired" });
+      }
+
       // Verify TOTP code
+      if (!isValidTotpCodeFormat(totp_code)) {
+        return res.status(400).json({ error: "Invalid TOTP code format" });
+      }
+
       if (!verifyTotpCode(totp_secret, totp_code)) {
         return res.status(400).json({ error: "Invalid TOTP code" });
       }
 
       // Process OPAQUE registration for password
-      let opaqueResponseState: { response: Uint8Array; state: ServerRegistrationState };
       try {
-        opaqueResponseState = await registerResponse(
-          user.username,
-          Buffer.from(opaque_request, "base64")
-        );
-      } catch {
-        return res.status(400).json({ error: "Invalid OPAQUE parameters" });
-      }
-
-      let passwordFile: Uint8Array;
-      try {
-        passwordFile = registerFinish(
-          opaqueResponseState.state,
+        const passwordFile = registerFinish(
+          session.state,
           Buffer.from(opaque_finish, "base64")
         );
+
+        opaquePasswordAddSessions.delete(sessionKeyValue);
+
+        // Generate recovery codes
+        const recoveryCodes = generateRecoveryCodes();
+        const recoveryCodeHashes = recoveryCodes.map(hashRecoveryCode);
+
+        // Update user and create recovery codes
+        await prisma.$transaction(async (tx) => {
+          await tx.user.update({
+            where: { id: user.id },
+            data: {
+              opaque_password_file: Buffer.from(passwordFile),
+              totp_enabled: true,
+              totp_secret,
+              encrypted_totp_secret,
+              encrypted_totp_secret_iv,
+              totp_verified_at: new Date(),
+            },
+          });
+
+          await tx.totpRecoveryCode.createMany({
+            data: recoveryCodeHashes.map((code_hash) => ({
+              user_id: user.id,
+              code_hash,
+            })),
+          });
+        });
+
+        return res.json({ recovery_codes: recoveryCodes });
       } catch {
+        opaquePasswordAddSessions.delete(sessionKeyValue);
         return res.status(400).json({ error: "Invalid OPAQUE payload" });
       }
-
-      // Generate recovery codes
-      const recoveryCodes = generateRecoveryCodes();
-      const recoveryCodeHashes = recoveryCodes.map(hashRecoveryCode);
-
-      // Update user and create recovery codes
-      await prisma.$transaction(async (tx) => {
-        await tx.user.update({
-          where: { id: user.id },
-          data: {
-            opaque_password_file: Buffer.from(passwordFile),
-            totp_enabled: true,
-            totp_secret,
-            encrypted_totp_secret,
-            encrypted_totp_secret_iv,
-            totp_verified_at: new Date(),
-          },
-        });
-
-        await tx.totpRecoveryCode.createMany({
-          data: recoveryCodeHashes.map((code_hash) => ({
-            user_id: user.id,
-            code_hash,
-          })),
-        });
-      });
-
-      return res.json({ recovery_codes: recoveryCodes });
     } catch (error) {
       console.error("Error adding password + 2FA:", error);
       return res.status(500).json({ error: "Failed to add password + 2FA" });
