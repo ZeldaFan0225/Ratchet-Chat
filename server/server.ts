@@ -53,6 +53,7 @@ const corsOrigins = new Set(
       }
     })
 );
+console.log(`[CORS] Allowed origins: ${JSON.stringify(Array.from(corsOrigins))}`);
 const allowAnyCorsOrigin =
   corsOrigins.size === 0 && (process.env.NODE_ENV ?? "development") !== "production";
 const shouldBypassCors = (req: Request) => {
@@ -250,6 +251,7 @@ const corsMiddleware = cors({
     if (corsOrigins.has(origin)) {
       return callback(null, true);
     }
+    console.log(`[CORS] Rejected origin: ${origin}`);
     return callback(new Error("Not allowed by CORS"));
   },
   credentials: true,
